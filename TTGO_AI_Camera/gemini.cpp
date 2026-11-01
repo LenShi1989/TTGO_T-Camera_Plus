@@ -1,0 +1,331 @@
+#include "gemini.h"
+
+#include <ArduinoJson.h>
+#include <WiFiClientSecure.h>
+
+#include "app_config.h"
+#include "util.h"
+#include "wifi_manager.h"
+
+static const char *kHost = "generativelanguage.googleapis.com";
+
+static const char *kAudioInstruction =
+    "請先仔細聽這段錄音，辨識出使用者說的內容（可能是台灣中文或英文），"
+    "然後用繁體中文簡短回答。只輸出下列 JSON 物件，不要加上任何其他文字、"
+    "不要使用程式碼圍籬：\n"
+    "{\"user\":\"辨識到的文字\",\"reply\":\"你的回答\"}";
+
+bool geminiReady() { return !g_cfg.ai.api_key.isEmpty(); }
+
+// ---------------------------------------------------------------- HTTP
+
+static int readByte(WiFiClientSecure &c, uint32_t deadline) {
+  while ((int32_t)(millis() - deadline) < 0) {
+    int v = c.read();
+    if (v >= 0) return v;
+    if (!c.connected() && !c.available()) return -1;
+    delay(2);
+  }
+  return -1;
+}
+
+static String readLine(WiFiClientSecure &c, uint32_t deadline) {
+  String line;
+  while (line.length() < 512) {
+    int v = readByte(c, deadline);
+    if (v < 0) break;
+    if (v == '\n') break;
+    if (v != '\r') line += (char)v;
+  }
+  return line;
+}
+
+static bool writeAll(WiFiClientSecure &c, const uint8_t *data, size_t len) {
+  size_t sent = 0;
+  uint32_t deadline = millis() + 20000;
+  while (sent < len) {
+    size_t n = c.write(data + sent, len - sent);
+    if (n == 0) {
+      if ((int32_t)(millis() - deadline) >= 0) return false;
+      delay(5);
+      continue;
+    }
+    sent += n;
+  }
+  return true;
+}
+
+static bool httpPostJson(const String &path, const uint8_t *body, size_t bodyLen, String &resp,
+                         int &status, String &err) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setHandshakeTimeout(20);
+
+  if (!client.connect(kHost, 443, 20000)) {
+    err = "無法連線到 Gemini（請檢查網路）";
+    return false;
+  }
+
+  String head;
+  head.reserve(256);
+  head += "POST ";
+  head += path;
+  head += " HTTP/1.1\r\nHost: ";
+  head += kHost;
+  head += "\r\nUser-Agent: TTGO-AI-Camera/1.0\r\nContent-Type: application/json\r\n";
+  head += "Content-Length: ";
+  head += String((unsigned)bodyLen);
+  head += "\r\nConnection: close\r\n\r\n";
+
+  if (!writeAll(client, (const uint8_t *)head.c_str(), head.length())) {
+    err = "請求送出失敗（標頭）";
+    client.stop();
+    return false;
+  }
+  if (!writeAll(client, body, bodyLen)) {
+    err = "請求送出失敗（內容）";
+    client.stop();
+    return false;
+  }
+
+  uint32_t deadline = millis() + g_cfg.ai.timeout_ms + 15000;
+
+  String statusLine = readLine(client, deadline);
+  status = 0;
+  int sp = statusLine.indexOf(' ');
+  if (sp > 0) status = statusLine.substring(sp + 1).toInt();
+  if (status == 0) {
+    err = "伺服器沒有回應";
+    client.stop();
+    return false;
+  }
+
+  bool chunked = false;
+  long contentLength = -1;
+  while (true) {
+    String line = readLine(client, deadline);
+    if (line.isEmpty()) break;
+    String lower = line;
+    lower.toLowerCase();
+    if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") >= 0) chunked = true;
+    if (lower.startsWith("content-length:")) contentLength = lower.substring(15).toInt();
+  }
+
+  resp = "";
+  resp.reserve(2048);
+  const size_t kMaxResp = 24576;
+
+  if (chunked) {
+    while (resp.length() < kMaxResp) {
+      String sizeLine = readLine(client, deadline);
+      if (sizeLine.isEmpty()) {
+        if (!client.connected()) break;
+        continue;
+      }
+      long sz = strtol(sizeLine.c_str(), nullptr, 16);
+      if (sz <= 0) break;
+      for (long i = 0; i < sz && resp.length() < kMaxResp; i++) {
+        int v = readByte(client, deadline);
+        if (v < 0) break;
+        resp += (char)v;
+      }
+      readLine(client, deadline); // 結尾 CRLF
+    }
+  } else if (contentLength > 0) {
+    for (long i = 0; i < contentLength && resp.length() < kMaxResp; i++) {
+      int v = readByte(client, deadline);
+      if (v < 0) break;
+      resp += (char)v;
+    }
+  } else {
+    while (resp.length() < kMaxResp) {
+      int v = readByte(client, deadline);
+      if (v < 0) break;
+      resp += (char)v;
+    }
+  }
+
+  client.stop();
+  return true;
+}
+
+// ---------------------------------------------------------------- 回應解析
+
+static String stripCodeFence(const String &s) {
+  String t = trimCopy(s);
+  if (t.startsWith("```")) {
+    int nl = t.indexOf('\n');
+    if (nl >= 0) t = t.substring(nl + 1);
+    int end = t.lastIndexOf("```");
+    if (end >= 0) t = t.substring(0, end);
+    t = trimCopy(t);
+  }
+  return t;
+}
+
+// 從模型輸出擷取 JSON 物件；找不到就整段當成回覆
+static void parseModelText(const String &raw, AiReply &out) {
+  String text = stripCodeFence(raw);
+  int first = text.indexOf('{');
+  int last = text.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    String candidate = text.substring(first, last + 1);
+    JsonDocument doc;
+    DeserializationError e = deserializeJson(doc, candidate);
+    if (!e) {
+      const char *reply = doc["reply"] | (const char *)nullptr;
+      const char *user = doc["user"] | (const char *)nullptr;
+      if (reply && *reply) {
+        out.reply = reply;
+        if (user) out.user = user;
+        out.ok = true;
+        return;
+      }
+    }
+  }
+  out.reply = text;
+  out.ok = !text.isEmpty();
+}
+
+static bool parseApiResponse(const String &resp, int status, AiReply &out) {
+  JsonDocument doc;
+  DeserializationError e = deserializeJson(doc, resp);
+  if (e) {
+    out.error = String("回應解析失敗 (HTTP ") + status + ")";
+    return false;
+  }
+
+  if (status != 200) {
+    const char *msg = doc["error"]["message"] | (const char *)nullptr;
+    out.error = String("HTTP ") + status;
+    if (msg) out.error += String("：") + msg;
+    return false;
+  }
+
+  const char *block = doc["promptFeedback"]["blockReason"] | (const char *)nullptr;
+  if (block) {
+    out.error = String("內容被安全政策阻擋：") + block;
+    return false;
+  }
+
+  JsonArrayConst candidates = doc["candidates"];
+  if (candidates.isNull() || candidates.size() == 0) {
+    out.error = "模型沒有回覆";
+    return false;
+  }
+
+  String text;
+  JsonArrayConst parts = candidates[0]["content"]["parts"];
+  for (JsonVariantConst p : parts) {
+    const char *t = p["text"] | (const char *)nullptr;
+    if (t) text += t;
+  }
+  if (text.isEmpty()) {
+    out.error = "模型回覆為空";
+    return false;
+  }
+  parseModelText(text, out);
+  return out.ok;
+}
+
+static String buildPath() {
+  String path = "/v1beta/models/";
+  path += g_cfg.ai.model;
+  path += ":generateContent?key=";
+  path += g_cfg.ai.api_key;
+  return path;
+}
+
+static void appendGenerationConfig(String &s) {
+  s += ",\"generationConfig\":{\"temperature\":";
+  s += String(g_cfg.ai.temperature, 2);
+  s += ",\"maxOutputTokens\":";
+  s += String(g_cfg.ai.max_output_tokens);
+  s += "}";
+}
+
+// ---------------------------------------------------------------- 公開 API
+
+bool geminiChatText(const String &text, AiReply &out) {
+  out = AiReply();
+  if (!geminiReady()) {
+    out.error = "尚未設定 Gemini API Key（config.json 的 ai.api_key）";
+    return false;
+  }
+  if (!wifiConnected()) {
+    out.error = "WiFi 未連線";
+    return false;
+  }
+
+  String body;
+  body.reserve(text.length() * 2 + 1024);
+  body += "{\"systemInstruction\":{\"parts\":[{\"text\":\"";
+  body += jsonEscape(g_cfg.ai.system_prompt);
+  body += "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"";
+  body += jsonEscape(text);
+  body += "\"}]}]";
+  appendGenerationConfig(body);
+  body += "}";
+
+  String resp, err;
+  int status = 0;
+  if (!httpPostJson(buildPath(), (const uint8_t *)body.c_str(), body.length(), resp, status, err)) {
+    out.error = err;
+    return false;
+  }
+  out.status = status;
+  return parseApiResponse(resp, status, out);
+}
+
+bool geminiChatAudio(const uint8_t *wav, size_t wavLen, AiReply &out) {
+  out = AiReply();
+  if (!geminiReady()) {
+    out.error = "尚未設定 Gemini API Key（config.json 的 ai.api_key）";
+    return false;
+  }
+  if (!wifiConnected()) {
+    out.error = "WiFi 未連線";
+    return false;
+  }
+
+  String prefix;
+  prefix.reserve(1024);
+  prefix += "{\"systemInstruction\":{\"parts\":[{\"text\":\"";
+  prefix += jsonEscape(g_cfg.ai.system_prompt);
+  prefix += "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"";
+  prefix += jsonEscape(kAudioInstruction);
+  prefix += "\"},{\"inlineData\":{\"mimeType\":\"audio/wav\",\"data\":\"";
+
+  String suffix;
+  suffix.reserve(256);
+  suffix += "\"}}]}]";
+  appendGenerationConfig(suffix);
+  suffix += "}";
+
+  size_t b64Len = base64EncodedLength(wavLen);
+  size_t total = prefix.length() + b64Len + suffix.length() + 1;
+
+  uint8_t *body = (uint8_t *)ps_malloc(total);
+  if (!body) body = (uint8_t *)malloc(total);
+  if (!body) {
+    out.error = "記憶體不足，無法組裝語音請求";
+    return false;
+  }
+
+  memcpy(body, prefix.c_str(), prefix.length());
+  base64Encode(wav, wavLen, (char *)(body + prefix.length()));
+  memcpy(body + prefix.length() + b64Len, suffix.c_str(), suffix.length());
+  size_t bodyLen = prefix.length() + b64Len + suffix.length();
+
+  String resp, err;
+  int status = 0;
+  bool sent = httpPostJson(buildPath(), body, bodyLen, resp, status, err);
+  free(body);
+
+  if (!sent) {
+    out.error = err;
+    return false;
+  }
+  out.status = status;
+  return parseApiResponse(resp, status, out);
+}
