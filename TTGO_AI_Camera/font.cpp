@@ -37,10 +37,14 @@ bool Font::begin(const String &path) {
     return false;
   }
 
+  // 字型動輒數百 KB，只放 PSRAM；內部 RAM 僅在小檔案時才嘗試，
+  // 避免白白佔用 heap 讓後面的 WiFi / TLS 失敗。
   _base = (uint8_t *)ps_malloc(size);
-  if (!_base) _base = (uint8_t *)malloc(size);
+  if (!_base && size <= 48 * 1024) _base = (uint8_t *)malloc(size);
   if (!_base) {
-    logLine("FONT", "記憶體不足，無法載入字型 (%u bytes)", (unsigned)size);
+    logLine("FONT", "記憶體不足，無法載入字型 (%u bytes)：free heap %u / PSRAM %u",
+            (unsigned)size, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
+    if (!psramFound()) logLine("FONT", "PSRAM 未啟用，字型無法載入（需 Tools → PSRAM: Enabled）");
     f.close();
     return false;
   }

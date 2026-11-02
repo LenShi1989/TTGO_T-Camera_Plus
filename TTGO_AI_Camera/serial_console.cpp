@@ -52,7 +52,7 @@ static void cmdStatus() {
                 (unsigned)ESP.getPsramSize());
   Serial.printf("SD        : %s\n", storageReady() ? "已掛載" : "未掛載");
   Serial.printf("人臉數    : %d\n", faceCount());
-  Serial.printf("BME280    : %s\n", bmePresent() ? "已連接" : "未偵測");
+  Serial.printf("BME280    : %s\n", bmeEnsure() ? "已連接" : "未偵測");
   Serial.printf("電池      : %s\n", powerText().c_str());
   Serial.printf("Gemini    : %s（%s）\n", geminiReady() ? "已設定" : "未設定",
                 g_cfg.ai.model.c_str());

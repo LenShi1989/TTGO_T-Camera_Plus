@@ -18,11 +18,14 @@ static String buildApSsid() {
 
 void wifiRestartAp() {
   WiFi.mode(WIFI_AP_STA);
-  s_apSsid = buildApSsid();
-  const char *pass = g_cfg.wifi.ap_password.length() >= 8 ? g_cfg.wifi.ap_password.c_str() : nullptr;
-  s_apActive = WiFi.softAP(s_apSsid.c_str(), pass);
-  logLine("WIFI", "AP %s 已啟動：http://%s", s_apSsid.c_str(),
-          WiFi.softAPIP().toString().c_str());
+  if (!s_apActive) {
+    s_apSsid = buildApSsid();
+    const char *pass =
+        g_cfg.wifi.ap_password.length() >= 8 ? g_cfg.wifi.ap_password.c_str() : nullptr;
+    s_apActive = WiFi.softAP(s_apSsid.c_str(), pass);
+    logLine("WIFI", "AP %s 已啟動：http://%s", s_apSsid.c_str(),
+            WiFi.softAPIP().toString().c_str());
+  }
 }
 
 bool wifiBegin() {
@@ -43,6 +46,7 @@ bool wifiBegin() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    s_apActive = false;
     logLine("WIFI", "已連線 %s，IP %s", g_cfg.wifi.ssid.c_str(),
             WiFi.localIP().toString().c_str());
     return true;
@@ -98,6 +102,7 @@ int wifiScan(String *ssids, int *rssi, bool *secure, int maxItems) {
 
 bool wifiConnect(const String &ssid, const String &password, uint32_t timeoutMs, String *err) {
   logLine("WIFI", "嘗試連線 %s", ssid.c_str());
+  s_apActive = false;
   WiFi.disconnect(true, false);
   delay(200);
   WiFi.mode(WIFI_STA);
@@ -107,6 +112,7 @@ bool wifiConnect(const String &ssid, const String &password, uint32_t timeoutMs,
     delay(200);
   }
   if (WiFi.status() == WL_CONNECTED) {
+    s_apActive = false;
     g_cfg.wifi.ssid = ssid;
     g_cfg.wifi.password = password;
     g_cfg.save();
@@ -123,8 +129,11 @@ void wifiClearCredentials() {
   g_cfg.wifi.ssid = "";
   g_cfg.wifi.password = "";
   g_cfg.save();
+  s_apActive = false;
   WiFi.disconnect(true, true);
-  logLine("WIFI", "已清除連線設定");
+  // 立刻開啟 AP，避免清除設定後網頁完全失聯（不必等重新開機）
+  wifiRestartAp();
+  logLine("WIFI", "已清除連線設定，AP 模式已啟動");
 }
 
 void wifiLoop() {

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "bme280.h"
 #include "board_pins.h"
 #include "display.h"
 #include "esp_camera.h"
@@ -31,6 +32,8 @@ static int s_faceCap = 0;
 static uint8_t *s_rgb = nullptr;
 static int s_rgbW = 0, s_rgbH = 0;
 static dl_matrix3du_t *s_aligned = nullptr;
+static uint16_t *s_565 = nullptr;
+static bool s_rgbFresh = false; // s_rgb 內是否為目前這張影格的解碼結果
 
 // ---------------------------------------------------------------- 相機
 
@@ -57,7 +60,9 @@ bool camBegin() {
   cfg.xclk_freq_hz = g_cfg.camera.xclk_hz;
   cfg.ledc_timer = LEDC_TIMER_0;
   cfg.ledc_channel = LEDC_CHANNEL_0;
-  cfg.pixel_format = PIXFORMAT_RGB565;
+  // 用 JPEG 串流：單張只有十幾 KB，網頁即時影像比 RGB565 轉檔快很多；
+  // 人臉偵測與 TFT 畫面再用 fmt2rgb888 解碼。
+  cfg.pixel_format = PIXFORMAT_JPEG;
   cfg.frame_size = (framesize_t)g_cfg.camera.framesize;
   cfg.jpeg_quality = g_cfg.camera.jpeg_quality;
   cfg.fb_count = 2;
@@ -74,9 +79,24 @@ bool camBegin() {
     if (g_cfg.camera.hmirror) s->set_hmirror(s, 1);
   }
 
+  // 相機 SCCB（I2C0）與 BME280（I2C1）共用 GPIO 18/23，初始化完成後
+  // 一定要把 I2C1 綁回來，否則 BME280 會開始讀不到數值。
+  bmeRebindBus();
+
   s_camReady = true;
-  logLine("CAM", "OV2640 就緒 (%dx%d RGB565)", 320, 240);
+  logLine("CAM", "OV2640 就緒 (JPEG)");
   return true;
+}
+
+// 取一張影格；失敗時重新初始化相機再試一次（供電不穩或相機卡住時可自癒）
+static camera_fb_t *grabFrame() {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (fb) return fb;
+  if (!s_camReady) return nullptr;
+  logLine("CAM", "取樣失敗，重新初始化相機");
+  camEnd();
+  if (!camBegin()) return nullptr;
+  return esp_camera_fb_get();
 }
 
 bool camReady() { return s_camReady; }
@@ -85,6 +105,7 @@ void camEnd() {
   if (!s_camReady) return;
   esp_camera_deinit();
   s_camReady = false;
+  bmeRebindBus();
 }
 
 static bool ensureRgbBuffer(int w, int h) {
@@ -102,27 +123,77 @@ static bool ensureRgbBuffer(int w, int h) {
   }
   s_rgbW = w;
   s_rgbH = h;
+  s_rgbFresh = false;
   return true;
 }
 
-bool camPreviewToDisplay() {
-  if (!s_camReady) return false;
-  camera_fb_t *fb = esp_camera_fb_get();
+// 把一張影格置中裁成 240x240 顯示到 TFT。
+// decoded=true 表示呼叫端已經先把 JPEG 解到 s_rgb（人臉偵測流程），
+// 可以省掉一次 JPEG 解碼。
+static bool displayFrame(camera_fb_t *fb, bool decoded) {
   if (!fb) return false;
   int w = fb->width, h = fb->height;
   int side = w < h ? w : h;
   int cropX = (w - side) / 2;
-  g_disp.blitRGB565(0, 0, 240, 240, (const uint16_t *)fb->buf, w, side, side, cropX, 0);
-  esp_camera_fb_return(fb);
+
+  if (fb->format == PIXFORMAT_RGB565) {
+    g_disp.blitRGB565(0, 0, 240, 240, (const uint16_t *)fb->buf, w, side, side, cropX, 0);
+    return true;
+  }
+
+  if (!decoded || !s_rgbFresh) {
+    if (!ensureRgbBuffer(w, h)) return false;
+    s_rgbFresh = false;
+    if (!fmt2rgb888(fb->buf, fb->len, fb->format, s_rgb)) return false;
+    s_rgbFresh = true;
+  }
+  if (!s_565) s_565 = (uint16_t *)ps_malloc(240 * 240 * sizeof(uint16_t));
+  if (!s_565) return false;
+
+  // 置中裁成 240x240，再轉成 RGB565（相機格式為小端位元組）
+  for (int y = 0; y < 240; y++) {
+    int sy = y * side / 240;
+    const uint8_t *row = s_rgb + (size_t)sy * w * 3;
+    uint16_t *out = s_565 + y * 240;
+    for (int x = 0; x < 240; x++) {
+      const uint8_t *p = row + (size_t)(cropX + x * side / 240) * 3;
+      out[x] = (uint16_t)(((p[0] & 0xF8) << 8) | ((p[1] & 0xFC) << 3) | (p[2] >> 3));
+    }
+  }
+  g_disp.blitRGB565(0, 0, 240, 240, s_565, 240, 240, 240, 0, 0);
   return true;
 }
 
-bool camSnapshotJpeg(uint8_t **out, size_t *outLen) {
-  if (!s_camReady) return false;
-  camera_fb_t *fb = esp_camera_fb_get();
+bool camPreviewToDisplay() {
+  camera_fb_t *fb = grabFrame();
   if (!fb) return false;
-  bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height, fb->format,
-                    (uint8_t)g_cfg.camera.jpeg_quality, out, outLen);
+  bool ok = displayFrame(fb, false);
+  esp_camera_fb_return(fb);
+  return ok;
+}
+
+bool camSnapshotJpeg(uint8_t **out, size_t *outLen) {
+  *out = nullptr;
+  *outLen = 0;
+  if (!s_camReady) return false;
+  camera_fb_t *fb = grabFrame();
+  if (!fb) return false;
+
+  bool ok = false;
+  if (fb->format == PIXFORMAT_JPEG) {
+    uint8_t *buf = (uint8_t *)ps_malloc(fb->len);
+    if (!buf) buf = (uint8_t *)malloc(fb->len);
+    if (buf) {
+      memcpy(buf, fb->buf, fb->len);
+      *out = buf;
+      *outLen = fb->len;
+      ok = true;
+    }
+  } else {
+    ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height, fb->format,
+                 (uint8_t)g_cfg.camera.jpeg_quality, out, outLen);
+  }
+
   esp_camera_fb_return(fb);
   return ok;
 }
@@ -345,15 +416,13 @@ static box_array_t *detectOnFrame(camera_fb_t **fbOut, dl_matrix3du_t &img) {
   if (!fb) return nullptr;
   *fbOut = fb;
 
-  if (fb->format != PIXFORMAT_RGB565) {
-    logLine("CAM", "影格格式不是 RGB565");
-    return nullptr;
-  }
   if (!ensureRgbBuffer(fb->width, fb->height)) return nullptr;
+  s_rgbFresh = false;
   if (!fmt2rgb888(fb->buf, fb->len, fb->format, s_rgb)) {
-    logLine("CAM", "RGB565→RGB888 轉換失敗");
+    logLine("CAM", "影格轉 RGB888 失敗");
     return nullptr;
   }
+  s_rgbFresh = true;
 
   img.w = fb->width;
   img.h = fb->height;
@@ -389,9 +458,7 @@ bool faceDetect(FaceResult &res, bool doRecognize, bool drawBox) {
   box_array_t *boxes = detectOnFrame(&fb, img);
 
   if (drawBox && fb) {
-    int side = fb->width < fb->height ? fb->width : fb->height;
-    int cropX = (fb->width - side) / 2;
-    g_disp.blitRGB565(0, 0, 240, 240, (const uint16_t *)fb->buf, fb->width, side, side, cropX, 0);
+    displayFrame(fb, true); // detectOnFrame() 已把同一張影格解到 s_rgb
   }
 
   bool found = false;
@@ -505,11 +572,7 @@ bool faceEnroll(const String &rawName, EnrollProgressFn cb, String &err) {
       }
     }
 
-    if (fb) {
-      int side = fb->width < fb->height ? fb->width : fb->height;
-      int cropX = (fb->width - side) / 2;
-      g_disp.blitRGB565(0, 0, 240, 240, (const uint16_t *)fb->buf, fb->width, side, side, cropX, 0);
-    }
+    if (fb) displayFrame(fb, true);
     if (faceFound) {
       g_disp.drawRect(bx, by, bw, bh, COL_GREEN);
       g_disp.drawRect(bx + 1, by + 1, bw - 2, bh - 2, COL_GREEN);

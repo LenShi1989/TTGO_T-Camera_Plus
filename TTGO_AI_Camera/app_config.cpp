@@ -87,6 +87,7 @@ bool AppConfig::fromJson(const String &json, String *err) {
     readU32(au["silence_ms"], audio.silence_ms);
     readInt(au["vad_threshold"], audio.vad_threshold);
     readInt(au["gain"], audio.gain);
+    readBool(au["enabled"], audio.enabled);
   }
 
   JsonObjectConst b = doc["bme280"];
@@ -114,6 +115,7 @@ bool AppConfig::fromJson(const String &json, String *err) {
   if (!d.isNull()) {
     readInt(d["brightness"], display.brightness);
     readU32(d["nav_timeout_ms"], display.nav_timeout_ms);
+    readBool(d["auto_run"], display.auto_run);
   }
 
   JsonObjectConst wb = doc["web"];
@@ -174,6 +176,7 @@ String AppConfig::toJson(bool maskSecrets) const {
   au["silence_ms"] = audio.silence_ms;
   au["vad_threshold"] = audio.vad_threshold;
   au["gain"] = audio.gain;
+  au["enabled"] = audio.enabled;
 
   JsonObject b = doc["bme280"].to<JsonObject>();
   b["enabled"] = bme.enabled;
@@ -193,6 +196,7 @@ String AppConfig::toJson(bool maskSecrets) const {
   JsonObject d = doc["display"].to<JsonObject>();
   d["brightness"] = display.brightness;
   d["nav_timeout_ms"] = display.nav_timeout_ms;
+  d["auto_run"] = display.auto_run;
 
   JsonObject wb = doc["web"].to<JsonObject>();
   wb["enabled"] = web.enabled;

@@ -15,6 +15,7 @@
     "temperature": 0.7
   },
   "audio": {
+    "enabled": true,
     "sample_rate": 16000,
     "max_record_ms": 6000,
     "min_record_ms": 1200,
@@ -39,7 +40,8 @@
   },
   "display": {
     "brightness": 255,
-    "nav_timeout_ms": 2500
+    "nav_timeout_ms": 2500,
+    "auto_run": false
   },
   "web": {
     "enabled": true,

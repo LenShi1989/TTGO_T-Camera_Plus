@@ -21,6 +21,7 @@ enum AppAction : uint16_t {
   ACT_FACE_RECOGNIZE = 53,
   ACT_FACE_LIST = 54,
   ACT_FACE_DELETE_ONE = 55,
+  ACT_CAM_STREAM = 56,
   ACT_ABOUT = 60,
   ACT_REBOOT = 61,
 };
@@ -52,3 +53,12 @@ typedef void (*AiTickFn)(void);
 // 同步等待結果；tick 可為 nullptr，等待期間每 ~30ms 呼叫一次
 bool appAiRun(bool audio, const String &text, const uint8_t *wav, size_t wavLen, AiReply &out,
               AiTickFn tick);
+
+// 網頁語音 / 文字請求期間，讓 TFT 顯示球體動畫（不必進入本機的選單畫面）
+void appOrbThinking();
+void appOrbTick();
+
+// 網頁「加入人臉 ID」時，同步在 TFT 顯示鏡頭畫面、綠框與取樣進度
+void appEnrollBegin(const String &name);
+void appEnrollTick(int sample, int total, bool faceFound, int x, int y, int w, int h);
+void appEnrollEnd(bool ok, const String &msg, const String &name);

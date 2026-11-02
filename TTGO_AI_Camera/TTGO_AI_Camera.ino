@@ -3,11 +3,13 @@
 //  ESP32 / ST7789 240x240 / OV2640 / I2S 麥克風 / microSD / BME280
 //
 //  操作方式：本板沒有使用者按鍵，RST 直接接 EN。
-//    - 冷開機：顯示主選單，等待第一次 RST。
-//    - 每按一次 RST：游標往下移動一格（到底繞回第一項）。
-//    - 游標停在某項 2.5 秒（可在 config.json 調整）即自動執行。
-//    - 在子畫面按 RST：回到選單並自動移到下一項。
-//  另外提供網頁介面與序列埠指令，方便直接操作。
+//    - 主要操作介面是 SPIFFS 內的網頁（側邊欄六大頁籤）。
+//    - 冷開機：顯示主選單，游標不亮。
+//    - 預設 display.auto_run = false，選單不會倒數自動執行。
+//    - 每按一次 RST 只會重新開機並把游標往下移動一格，不會執行功能。
+//    - 在子畫面按 RST：重新開機後回到選單，游標移到下一項。
+//    - 取消 / 離開目前畫面請按網頁側邊欄最下方的「TFT 顯示主選單」。
+//  另外提供序列埠指令，方便量產測試與除錯。
 // =====================================================================
 
 #include <Arduino.h>
@@ -120,6 +122,7 @@ static const MenuItem kAiMenu[] = {
 };
 
 static const MenuItem kCamMenu[] = {
+    {"串流影像", ACT_CAM_STREAM, "TFT 即時畫面"},
     {"人臉設定", ACT_SUBMENU, "加入 / 刪除 / 匯出"},
     {"人臉辨識", ACT_FACE_RECOGNIZE, "綠框成功 / 紅框失敗"},
     {"返回", ACT_BACK, "回上一層"},
@@ -177,7 +180,7 @@ static int menuCount() {
       case 0: return 4;
       case 1: return 4;
       case 2: return 4;
-      case 4: return 3;
+      case 4: return 4;
       default: return 0;
     }
   }
@@ -210,7 +213,7 @@ static MenuItem menuItemAt(int idx) {
         if (idx < 4) return kAiMenu[idx];
         break;
       case 4:
-        if (idx < 3) return kCamMenu[idx];
+        if (idx < 4) return kCamMenu[idx];
         break;
       default:
         break;
@@ -318,7 +321,9 @@ static void renderMenu() {
     g_disp.drawText(210, 7, buf, COL_DIM, 1);
   }
 
-  drawFooterHint(cur == 255 ? "按 RST 選擇下一項" : "倒數結束後自動執行");
+  drawFooterHint(g_cfg.display.auto_run
+                     ? (cur == 255 ? "按 RST 選擇下一項" : "倒數結束後自動執行")
+                     : "請由網頁前端操作");
 
   g_disp.push();
 }
@@ -340,6 +345,12 @@ void appShowMenu() {
   nav().mode = MODE_MENU;
   renderMenu();
   NavState &n = nav();
+  if (!g_cfg.display.auto_run) {
+    // 本板沒有實體按鍵：不再倒數自動執行，所有動作改由網頁 / 序列埠觸發
+    s_countdownActive = false;
+    s_lastCountdownW = -1;
+    return;
+  }
   if (!n.hold && n.depth < NAV_MAX_DEPTH && n.cursor[n.depth] != 255) {
     s_countdownStart = millis();
     s_countdownEnd = s_countdownStart + g_cfg.display.nav_timeout_ms;
@@ -367,7 +378,7 @@ static void returnToMenu() {
 static void screenFrame(const char *title) {
   g_disp.clear(COL_BG);
   drawHeader(title);
-  drawFooterHint("按 RST 返回選單");
+  drawFooterHint("網頁可返回主選單");
 }
 
 static void screenMessage(const char *title, const char *body) {
@@ -503,7 +514,22 @@ static void chatAudioTick(int level, uint32_t elapsedMs) {
   orbDraw(s_chatLevel, s_chatPhase, COL_ACCENT);
 }
 
-static void chatAiTick() {
+static void chatAiTick() { appOrbTick(); }
+
+// 給網頁用的球體動畫：handleVoice() 等待 Gemini 時每 30ms 呼叫一次，
+// 讓 TFT 與本機「麥克風收音」有同樣的思考動畫。
+void appOrbThinking() {
+  g_disp.clear(COL_BG);
+  g_disp.fillRect(0, 0, 240, 30, COL_PANEL);
+  g_disp.fillRect(0, 29, 240, 1, COL_ACCENT2);
+  g_disp.drawText(10, 7, "AI聊天機器人", COL_ACCENT, 1);
+  g_disp.drawTextCenter(196, "小 T 思考中…", COL_PURPLE, 1);
+  g_disp.push();
+  s_chatLevel = 0;
+  s_chatPhase = 0;
+}
+
+void appOrbTick() {
   s_chatPhase = (s_chatPhase + 14) % 360;
   orbDraw(0, s_chatPhase, COL_PURPLE);
 }
@@ -547,13 +573,19 @@ static void screenChat() {
   if (!geminiReady()) {
     screenMessage("AI聊天機器人",
                   "尚未設定 Gemini API Key。\n\n請編輯 SD 卡 /config.json 的 ai.api_key，"
-                  "或用手機連線到本機 AP 後開啟網頁設定。");
+                  "或到網頁「AI 聊天機器人」頁籤的 AI 設定填入。");
     return;
   }
   if (!wifiConnected()) {
     screenMessage("AI聊天機器人",
                   "WiFi 尚未連線。\n\n請先進入「WiFi設定」完成連線，"
                   "或用手機連線本機 AP 後由網頁設定。");
+    return;
+  }
+  if (!g_cfg.audio.enabled) {
+    screenMessage("AI聊天機器人",
+                  "板載麥克風目前已關閉。\n\n請到網頁「AI 聊天機器人」把麥克風開關切到 ON，"
+                  "再回來使用語音對話。");
     return;
   }
   if (!audioBegin()) {
@@ -613,7 +645,7 @@ static void screenChat() {
     s_replyPage = 0;
     chatStatus("發生錯誤", COL_RED);
     drawReplyPage();
-    chatIdleLoop("發生錯誤，按 RST 返回");
+    chatIdleLoop("發生錯誤，請由網頁返回");
     return;
   }
 
@@ -630,7 +662,7 @@ static void screenChat() {
   s_replyLineCount = wrapText(reply.reply, 220, s_replyLines, REPLY_LINES);
   s_replyPage = 0;
   drawReplyPage();
-  chatIdleLoop("按 RST 返回選單");
+  chatIdleLoop("網頁可返回主選單");
 }
 
 static void screenOrb() {
@@ -659,7 +691,7 @@ static void screenOrb() {
   s_replyLineCount = wrapText(last, 220, s_replyLines, REPLY_LINES);
   s_replyPage = 0;
   drawReplyPage();
-  chatIdleLoop("按 RST 返回選單");
+  chatIdleLoop("網頁可返回主選單");
 }
 
 // =====================================================================
@@ -712,10 +744,10 @@ static void drawChartRow(int y, const char *label, const char *value, const char
 static void screenChart() {
   g_disp.clear(COL_BG);
   drawHeader("環境參數");
-  drawFooterHint("每 2 秒更新，按 RST 返回");
+  drawFooterHint("每 2 秒更新 · 網頁可返回");
   g_disp.push();
 
-  if (!bmePresent()) {
+  if (!bmeEnsure()) {
     screenMessage("環境參數", "未偵測到 BME280。\n\n請確認感測器接在 I2C（SDA 18 / SCL 23），"
                               "或在 config.json 設定 bme280.enabled。");
     return;
@@ -818,7 +850,8 @@ static void screenSysStatus() {
 
   g_disp.drawText(10, y, "BME280", COL_DIM, 1);
   y += 17;
-  g_disp.drawText(10, y, bmePresent() ? "已連接" : "未偵測", bmePresent() ? COL_GREEN : COL_RED, 1);
+  bool bmeOk = bmeEnsure();
+  g_disp.drawText(10, y, bmeOk ? "已連接" : "未偵測", bmeOk ? COL_GREEN : COL_RED, 1);
   y += 22;
 
   g_disp.drawText(10, y, "電池", COL_DIM, 1);
@@ -919,12 +952,24 @@ static void screenAbout() {
 //  人臉註冊 / 辨識
 // =====================================================================
 
+static String s_enrollLabel;
+
 static void enrollTick(int sample, int total, bool faceFound, int x, int y, int w, int h) {
   (void)x;
   (void)y;
   (void)w;
   (void)h;
   if (total < 1) total = 1;
+
+  // 相機畫面每張都會覆蓋全螢幕，所以在取樣回呼中重畫標題列
+  g_disp.fillRect(0, 0, 240, 30, COL_PANEL);
+  g_disp.fillRect(0, 29, 240, 1, COL_ACCENT2);
+  g_disp.drawText(10, 7, "加入人臉ID", COL_ACCENT, 1);
+  if (!s_enrollLabel.isEmpty()) {
+    String label = utf8Truncate(s_enrollLabel, 18);
+    int lw = g_disp.textWidth(label.c_str(), 1);
+    g_disp.drawText(230 - lw, 7, label.c_str(), COL_DIM, 1);
+  }
 
   g_disp.fillRect(0, 196, 240, 44, COL_PANEL);
   g_disp.fillRect(10, 200, 220, 4, COL_PANEL2);
@@ -948,6 +993,7 @@ static void screenEnroll() {
   int idx = faceCount() + 1;
   char name[24];
   snprintf(name, sizeof(name), "ID%d", idx);
+  s_enrollLabel = name;
 
   g_disp.clear(COL_BG);
   drawHeader("加入人臉ID");
@@ -972,8 +1018,69 @@ static void screenEnroll() {
     g_disp.drawTextCenter(90, "註冊失敗", COL_RED, 1);
     g_disp.drawTextWrapped(10, 118, 220, err.c_str(), COL_TEXT, COL_BG, false, 1, 20, 4);
   }
-  drawFooterHint("按 RST 返回選單");
+  drawFooterHint("網頁可返回主選單");
   g_disp.push();
+}
+
+// 網頁觸發「加入人臉 ID」時使用：畫面與取樣進度和 TFT 內建註冊流程一致
+void appEnrollBegin(const String &name) {
+  s_enrollLabel = name;
+  g_disp.clear(COL_BG);
+  drawHeader("加入人臉ID");
+  g_disp.drawText(10, 40, "請面向鏡頭並保持不動", COL_TEXT, 1);
+  String line = "名稱：" + name;
+  g_disp.drawText(10, 60, line.c_str(), COL_ACCENT, 1);
+  g_disp.drawText(10, 86, "畫面會自動框出人臉並取樣", COL_DIM, 1);
+  g_disp.push();
+}
+
+void appEnrollTick(int sample, int total, bool faceFound, int x, int y, int w, int h) {
+  enrollTick(sample, total, faceFound, x, y, w, h);
+}
+
+void appEnrollEnd(bool ok, const String &msg, const String &name) {
+  g_disp.clear(COL_BG);
+  drawHeader("加入人臉ID");
+  if (ok) {
+    g_disp.drawTextCenter(90, "註冊完成", COL_GREEN, 1);
+    String line = "已加入 " + name + "（共 " + String(faceCount()) + " 個）";
+    g_disp.drawTextCenter(118, line.c_str(), COL_TEXT, 1);
+  } else {
+    g_disp.drawTextCenter(90, "註冊失敗", COL_RED, 1);
+    g_disp.drawTextWrapped(10, 118, 220, msg.c_str(), COL_TEXT, COL_BG, false, 1, 20, 4);
+  }
+  drawFooterHint("網頁可返回主選單");
+  g_disp.push();
+}
+
+// TFT 即時串流：QVGA 置中裁切成 240x240 連續顯示
+static void screenCamStream() {
+  if (!camBegin()) {
+    screenMessage("串流影像", "相機初始化失敗。\n\n請確認鏡頭排線，或重新開機再試。");
+    return;
+  }
+
+  g_disp.clear(COL_BG);
+  g_disp.push();
+
+  uint32_t last = 0;
+  uint32_t frames = 0;
+  while (s_pendingAction == 0) {
+    uint32_t now = millis();
+    if (now - last >= 90) {
+      last = now;
+      if (camPreviewToDisplay()) {
+        frames++;
+        g_disp.fillRect(0, 0, 74, 20, COL_PANEL);
+        g_disp.drawText(6, 2, "LIVE", COL_GREEN, 1);
+        g_disp.push();
+      }
+    }
+    webuiHandle();
+    serialPoll();
+    delay(2);
+  }
+  (void)frames;
 }
 
 static void screenRecognize() {
@@ -1094,6 +1201,9 @@ static void runScreen(uint16_t action) {
       break;
     case ACT_FACE_RECOGNIZE:
       screenRecognize();
+      break;
+    case ACT_CAM_STREAM:
+      screenCamStream();
       break;
     case ACT_FACE_LIST:
       screenFaceList();
@@ -1256,7 +1366,7 @@ String appStatusJson() {
        (g_font.ok() ? "true" : "false") + "},";
 
   s += "\"faces\":" + String(faceCount());
-  s += ",\"bme\":" + String(bmePresent() ? "true" : "false");
+  s += ",\"bme\":" + String(bmeEnsure() ? "true" : "false");
   s += ",\"power\":\"" + jsonEscape(powerText()) + "\"";
   s += ",\"ai\":" + String(geminiReady() ? "true" : "false");
   s += ",\"model\":\"" + jsonEscape(g_cfg.ai.model) + "\"";
@@ -1360,6 +1470,14 @@ void setup() {
 
   storageBegin();
   g_cfg.load();
+
+  // 開機記憶體診斷：螢幕緩衝區與字型都依賴 PSRAM
+  if (!psramFound()) {
+    Serial.println("[SYS] PSRAM 未啟用！請在 Tools → PSRAM 選「Enabled」後重新燒錄，");
+    Serial.println("[SYS] 否則顯示緩衝區（115 KB）與字型（593 KB）都無法配置。");
+  }
+  Serial.printf("[SYS] free heap %u bytes / free PSRAM %u bytes\n", (unsigned)ESP.getFreeHeap(),
+                (unsigned)ESP.getFreePsram());
 
   if (!g_disp.begin()) {
     Serial.println("[LCD] 初始化失敗");

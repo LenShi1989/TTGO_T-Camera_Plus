@@ -69,7 +69,9 @@ static const LcdCmd kSt7789Init[] = {
     {0xCA, {0x0F}, 1, 0},
     {0xC8, {0x08}, 1, 0},
     {0x55, {0xB0}, 1, 0},
-    {0x36, {0x00}, 1, 0},
+    // MADCTL：0x00 原始方向、0x40 水平鏡像（MX）、0x80 垂直鏡像（MY）、0xC0 旋轉 180°。
+    // 本板 ST7789 的面板排線是反的，用 0x00 會讓畫面上文字左右相反，所以設 0x40。
+    {0x36, {0x40}, 1, 0},
     {0x3A, {0x55}, 1, 0},
     {0xB1, {0x40, 0x02, 0x14}, 3, 0},
     {0x26, {0x01}, 1, 0},
@@ -108,13 +110,31 @@ bool Display::begin() {
   dcData();
   digitalWrite(PIN_TFT_BL, LOW);
 
-  _fb = (uint16_t *)ps_malloc((size_t)W * H * 2);
-  if (!_fb) _fb = (uint16_t *)malloc((size_t)W * H * 2);
-  if (!_fb) {
-    logLine("LCD", "無法配置顯示緩衝區");
-    return false;
+  const size_t fbBytes = (size_t)W * H * 2;
+  _fb = (uint16_t *)ps_malloc(fbBytes);
+  if (_fb) {
+    logLine("LCD", "顯示緩衝區在 PSRAM（%u bytes）", (unsigned)fbBytes);
+  } else {
+    // PSRAM 不可用時才退回內部 RAM，而且必須留下足夠餘裕給 WiFi / TLS。
+    uint32_t freeHeap = ESP.getFreeHeap();
+    if (psramFound()) {
+      logLine("LCD", "PSRAM 配置失敗（free heap %u / free PSRAM %u）", (unsigned)freeHeap,
+              (unsigned)ESP.getFreePsram());
+    } else {
+      logLine("LCD", "PSRAM 未啟用：請在 Arduino IDE 的 Tools → PSRAM 選「Enabled」再燒錄");
+    }
+    if (freeHeap > fbBytes + 65536) {
+      _fb = (uint16_t *)malloc(fbBytes);
+      if (_fb)
+        logLine("LCD", "顯示緩衝區改在內部 RAM（%u bytes，可用 heap 會變少）", (unsigned)fbBytes);
+    }
   }
-  memset(_fb, 0, (size_t)W * H * 2);
+  if (!_fb) {
+    logLine("LCD", "無法配置顯示緩衝區（需要 %u bytes，free heap %u），螢幕功能停用",
+            (unsigned)fbBytes, (unsigned)ESP.getFreeHeap());
+    return false;  // 之後所有繪圖呼叫都是空操作，不會再當機
+  }
+  memset(_fb, 0, fbBytes);
 
   spiBus.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
   for (size_t i = 0; i < sizeof(kSt7789Init) / sizeof(kSt7789Init[0]); i++) {
@@ -141,18 +161,20 @@ void Display::setBrightness(uint8_t value) {
 }
 
 void Display::clear(uint16_t color) {
+  if (!_fb) return;
   uint32_t *p = (uint32_t *)_fb;
   uint32_t v = ((uint32_t)color << 16) | color;
   for (int i = 0; i < W * H / 2; i++) p[i] = v;
 }
 
 void Display::drawPixel(int x, int y, uint16_t color) {
+  if (!_fb) return;
   if (x < 0 || y < 0 || x >= W || y >= H) return;
   _fb[y * W + x] = color;
 }
 
 void Display::fillRect(int x, int y, int w, int h, uint16_t color) {
-  if (w <= 0 || h <= 0) return;
+  if (!_fb || w <= 0 || h <= 0) return;
   int x0 = x < 0 ? 0 : x;
   int y0 = y < 0 ? 0 : y;
   int x1 = x + w > W ? W : x + w;
@@ -202,20 +224,21 @@ void Display::drawRoundRect(int x, int y, int w, int h, int r, uint16_t color) {
 }
 
 void Display::drawHLine(int x, int y, int w, uint16_t color) {
-  if (y < 0 || y >= H) return;
+  if (!_fb || y < 0 || y >= H) return;
   int x0 = x < 0 ? 0 : x;
   int x1 = x + w > W ? W : x + w;
   for (int xx = x0; xx < x1; xx++) _fb[y * W + xx] = color;
 }
 
 void Display::drawVLine(int x, int y, int h, uint16_t color) {
-  if (x < 0 || x >= W) return;
+  if (!_fb || x < 0 || x >= W) return;
   int y0 = y < 0 ? 0 : y;
   int y1 = y + h > H ? H : y + h;
   for (int yy = y0; yy < y1; yy++) _fb[yy * W + x] = color;
 }
 
 void Display::drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
+  if (!_fb) return;
   int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
   int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
   int err = dx + dy;
@@ -235,6 +258,7 @@ void Display::drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
 }
 
 void Display::drawCircle(int cx, int cy, int r, uint16_t color) {
+  if (!_fb) return;
   int x = r, y = 0, err = 1 - r;
   while (x >= y) {
     drawPixel(cx + x, cy + y, color);
@@ -256,7 +280,7 @@ void Display::drawCircle(int cx, int cy, int r, uint16_t color) {
 }
 
 void Display::fillCircle(int cx, int cy, int r, uint16_t color) {
-  if (r <= 0) return;
+  if (!_fb || r <= 0) return;
   for (int y = -r; y <= r; y++) {
     int dx = (int)(sqrtf((float)(r * r - y * y)) + 0.5f);
     drawHLine(cx - dx, cy + y, dx * 2 + 1, color);
@@ -264,7 +288,7 @@ void Display::fillCircle(int cx, int cy, int r, uint16_t color) {
 }
 
 void Display::fillCircleAlpha(int cx, int cy, int r, uint16_t color, uint8_t alpha) {
-  if (r <= 0) return;
+  if (!_fb || r <= 0) return;
   // 拆解來源與目的顏色（皆為已交換格式）
   uint16_t sc = (uint16_t)((color >> 8) | (color << 8));
   uint8_t sr = (sc >> 11) & 0x1F, sg = (sc >> 5) & 0x3F, sb = sc & 0x1F;
@@ -331,6 +355,7 @@ static int drawFallbackChar(Display *d, uint16_t *fb, int x, int y, uint32_t cp,
 }
 
 int Display::drawChar(int x, int y, uint32_t cp, uint16_t fg, uint16_t bg, bool opaque, int scale) {
+  if (!_fb) return x;
   if (scale < 1) scale = 1;
   const uint8_t *g = g_font.ok() ? g_font.glyph(cp) : nullptr;
   if (!g) {
@@ -372,7 +397,7 @@ void Display::drawTextCenter(int y, const char *s, uint16_t fg, int scale) {
 
 int Display::drawTextWrapped(int x, int y, int maxW, const char *s, uint16_t fg, uint16_t bg,
                              bool opaque, int scale, int lineHeight, int maxLines) {
-  if (!s) return 0;
+  if (!_fb || !s) return 0;
   size_t len = strlen(s);
   size_t i = 0;
   int cx = x, cy = y;
@@ -409,6 +434,7 @@ int Display::drawTextWrapped(int x, int y, int maxW, const char *s, uint16_t fg,
 
 void Display::blitRGB565(int dx, int dy, int dw, int dh, const uint16_t *src, int srcStride,
                          int srcW, int srcH, int srcX, int srcY) {
+  if (!_fb) return;
   for (int y = 0; y < dh; y++) {
     int sy = srcY + y * srcH / dh;
     if (sy < 0 || sy >= srcH) continue;

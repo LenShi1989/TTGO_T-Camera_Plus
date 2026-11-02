@@ -22,6 +22,7 @@ struct AiCfg {
 };
 
 struct AudioCfg {
+  bool enabled = true; // 板載 I2S 麥克風開關（網頁可切換）
   uint32_t sample_rate = 16000;
   uint32_t max_record_ms = 6000;
   uint32_t min_record_ms = 1200;
@@ -50,6 +51,9 @@ struct CameraCfg {
 struct DisplayCfg {
   int brightness = 255; // 0..255
   uint32_t nav_timeout_ms = 2500;
+  // 本板沒有實體按鍵，預設關閉「停留 2.5 秒自動執行」的選單倒數，
+  // 一切改由網頁前端操作；設成 true 才會恢復舊的 RST 導覽行為。
+  bool auto_run = false;
 };
 
 struct WebCfg {
