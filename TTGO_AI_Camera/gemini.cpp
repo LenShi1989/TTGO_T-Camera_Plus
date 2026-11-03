@@ -15,21 +15,41 @@ static const char *kAudioInstruction =
     "{\"user\":\"辨識到的文字\",\"reply\":\"你的回答\"}";
 
 bool geminiReady() {
-  return !g_cfg.ai.api_key.isEmpty() && !g_cfg.ai.api_url.isEmpty();
+  // 本機 / 自架的 OpenAI 相容服務可能不需要金鑰，因此只要求有端點。
+  return !g_cfg.ai.api_url.isEmpty();
 }
 
 // ---------------------------------------------------------------- 端點設定
 
-// ai.api_url 可自訂供應商，支援 {model} 與 {key} 兩個佔位符。預設：
-//   https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}
-// 只替換網址，請求與回應仍是 Gemini generateContent 的 JSON 格式，
-// 所以也可以指向自架或代理的 Gemini 相容服務。
+// ai.api_url 可自訂供應商，支援 {model} 與 {key} 兩個佔位符。
+// ai.api_style 決定請求格式：
+//   gemini = generateContent（預設）
+//   openai = /v1/chat/completions（LM Studio、Ollama、one-api 等相容服務）
+//   auto   = 依網址自動判斷
 struct AiEndpoint {
   bool tls;
+  bool openai;
   String host;
   uint16_t port;
   String path;
 };
+
+// OpenAI 相容服務的網址只要填到 .../v1，這裡自動補上 /chat/completions。
+static String normalizeOpenAiPath(const String &in) {
+  String path = in;
+  String query;
+  int q = path.indexOf('?');
+  if (q >= 0) {
+    query = path.substring(q);
+    path = path.substring(0, q);
+  }
+  while (path.endsWith("/")) path.remove(path.length() - 1);
+  if (!path.endsWith("/chat/completions")) {
+    if (path.isEmpty()) path = "/v1";
+    path += "/chat/completions";
+  }
+  return path + query;
+}
 
 static bool buildEndpoint(AiEndpoint &ep, String &err) {
   String url = g_cfg.ai.api_url;
@@ -42,6 +62,23 @@ static bool buildEndpoint(AiEndpoint &ep, String &err) {
   url.replace("{key}", g_cfg.ai.api_key);
   url.replace("{MODEL}", g_cfg.ai.model);
   url.replace("{KEY}", g_cfg.ai.api_key);
+
+  // 明確設定優先；auto 時再依網址判斷（預設 Gemini 端點含 :generateContent）。
+  String style = g_cfg.ai.api_style;
+  style.trim();
+  style.toLowerCase();
+  if (style != "gemini" && style != "openai") {
+    if (url.indexOf(":generateContent") >= 0 ||
+        url.indexOf("generativelanguage.googleapis.com") >= 0) {
+      style = "gemini";
+    } else if (url.indexOf("/chat/completions") >= 0 || url.endsWith("/v1") ||
+               url.endsWith("/v1/") || url.indexOf("/v1/") >= 0) {
+      style = "openai";
+    } else {
+      style = "gemini";
+    }
+  }
+  ep.openai = (style == "openai");
 
   int sep = url.indexOf("://");
   if (sep <= 0) {
@@ -87,6 +124,7 @@ static bool buildEndpoint(AiEndpoint &ep, String &err) {
     err = "ai.api_url 缺少主機名稱";
     return false;
   }
+  if (ep.openai) ep.path = normalizeOpenAiPath(ep.path);
   return true;
 }
 
@@ -206,16 +244,23 @@ static bool httpExchange(C &client, const String &head, const uint8_t *body, siz
   return true;
 }
 
-static bool httpPostJson(const AiEndpoint &ep, const uint8_t *body, size_t bodyLen, String &resp,
-                         int &status, String &err) {
+static bool httpPost(const AiEndpoint &ep, const String &contentType, const uint8_t *body,
+                     size_t bodyLen, String &resp, int &status, String &err) {
   String head;
-  head.reserve(320);
+  head.reserve(380);
   head += "POST ";
   head += ep.path;
   head += " HTTP/1.1\r\nHost: ";
   head += ep.host;
-  head += "\r\nUser-Agent: TTGO-AI-Camera/1.0\r\nContent-Type: application/json\r\n";
-  head += "Accept: application/json\r\nContent-Length: ";
+  head += "\r\nUser-Agent: TTGO-AI-Camera/1.0\r\nContent-Type: ";
+  head += contentType;
+  head += "\r\nAccept: application/json\r\n";
+  if (ep.openai && !g_cfg.ai.api_key.isEmpty()) {
+    head += "Authorization: Bearer ";
+    head += g_cfg.ai.api_key;
+    head += "\r\n";
+  }
+  head += "Content-Length: ";
   head += String((unsigned)bodyLen);
   head += "\r\nConnection: close\r\n\r\n";
 
@@ -236,6 +281,11 @@ static bool httpPostJson(const AiEndpoint &ep, const uint8_t *body, size_t bodyL
     return false;
   }
   return httpExchange(client, head, body, bodyLen, resp, status, err);
+}
+
+static bool httpPostJson(const AiEndpoint &ep, const uint8_t *body, size_t bodyLen, String &resp,
+                         int &status, String &err) {
+  return httpPost(ep, "application/json", body, bodyLen, resp, status, err);
 }
 
 // ---------------------------------------------------------------- 回應解析
@@ -276,7 +326,8 @@ static void parseModelText(const String &raw, AiReply &out) {
   out.ok = !text.isEmpty();
 }
 
-static bool parseApiResponse(const String &resp, int status, AiReply &out) {
+static bool parseApiResponse(const AiEndpoint &ep, const String &resp, int status,
+                             AiReply &out) {
   JsonDocument doc;
   DeserializationError e = deserializeJson(doc, resp);
   if (e) {
@@ -288,7 +339,29 @@ static bool parseApiResponse(const String &resp, int status, AiReply &out) {
     const char *msg = doc["error"]["message"] | (const char *)nullptr;
     out.error = String("HTTP ") + status;
     if (msg) out.error += String("：") + msg;
+    if (status == 404 && !ep.openai) {
+      out.error +=
+          "（若使用 OpenAI 相容服務，請把 ai.api_style 設為 openai，"
+          "或把網址填到 .../v1/chat/completions）";
+    }
     return false;
+  }
+
+  // OpenAI 相容格式：choices[0].message.content
+  JsonArrayConst choices = doc["choices"];
+  if (!choices.isNull() && choices.size() > 0) {
+    const char *m = choices[0]["message"]["content"] | (const char *)nullptr;
+    String text = m ? m : String();
+    if (text.isEmpty()) {
+      const char *t = choices[0]["text"] | (const char *)nullptr;
+      if (t) text = t;
+    }
+    if (text.isEmpty()) {
+      out.error = "模型回覆為空";
+      return false;
+    }
+    parseModelText(text, out);
+    return out.ok;
   }
 
   const char *block = doc["promptFeedback"]["blockReason"] | (const char *)nullptr;
@@ -325,28 +398,107 @@ static void appendGenerationConfig(String &s) {
   s += "}";
 }
 
+// ---------------------------------------------------------------- OpenAI 相容語音
+
+static const char *kFollowUpInstruction =
+    "以下是把使用者的語音轉成的文字。請用繁體中文簡短回答，"
+    "不要提到這段指示，也不要輸出 JSON 或程式碼圍籬。";
+
+static bool openAiTranscribe(const AiEndpoint &chatEp, const uint8_t *wav, size_t wavLen,
+                             String &text, String &err) {
+  AiEndpoint tp = chatEp;
+  int idx = tp.path.indexOf("/chat/completions");
+  if (idx < 0) {
+    err = "OpenAI 相容模式的語音需要 .../v1/chat/completions 形式的網址";
+    return false;
+  }
+  tp.path = tp.path.substring(0, idx) + "/audio/transcriptions";
+
+  const String boundary = "----TTGOAudio7f3c";
+  String head;
+  head.reserve(256);
+  head += "--";
+  head += boundary;
+  head += "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n";
+  head += "Content-Type: audio/wav\r\n\r\n";
+
+  String tail;
+  tail.reserve(320);
+  tail += "\r\n--";
+  tail += boundary;
+  tail += "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n";
+  tail += g_cfg.ai.stt_model;
+  tail += "\r\n--";
+  tail += boundary;
+  tail += "\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nzh\r\n";
+  tail += "--";
+  tail += boundary;
+  tail += "--\r\n";
+
+  size_t total = head.length() + wavLen + tail.length();
+  uint8_t *body = (uint8_t *)ps_malloc(total);
+  if (!body) body = (uint8_t *)malloc(total);
+  if (!body) {
+    err = "記憶體不足，無法組裝語音請求";
+    return false;
+  }
+  memcpy(body, head.c_str(), head.length());
+  memcpy(body + head.length(), wav, wavLen);
+  memcpy(body + head.length() + wavLen, tail.c_str(), tail.length());
+
+  String resp;
+  int status = 0;
+  String ctype = String("multipart/form-data; boundary=") + boundary;
+  bool sent = httpPost(tp, ctype, body, total, resp, status, err);
+  free(body);
+  if (!sent) return false;
+
+  JsonDocument doc;
+  DeserializationError e = deserializeJson(doc, resp);
+  if (e) {
+    err = String("語音辨識回應解析失敗 (HTTP ") + status + ")";
+    return false;
+  }
+  if (status != 200) {
+    const char *msg = doc["error"]["message"] | (const char *)nullptr;
+    err = String("語音辨識 HTTP ") + status;
+    if (msg) err += String("：") + msg;
+    return false;
+  }
+  const char *t2 = doc["text"] | (const char *)nullptr;
+  if (!t2 || !*t2) {
+    err = "語音辨識結果為空";
+    return false;
+  }
+  text = t2;
+  return true;
+}
+
+static bool openAiVoiceChat(const AiEndpoint &chatEp, const uint8_t *wav, size_t wavLen,
+                            AiReply &out) {
+  String text, err;
+  if (!openAiTranscribe(chatEp, wav, wavLen, text, err)) {
+    out.error = err;
+    return false;
+  }
+  String prompt = String(kFollowUpInstruction) + "\n使用者說：" + text;
+  if (!geminiChatText(prompt, out)) return false;
+  out.user = text;
+  return true;
+}
+
 // ---------------------------------------------------------------- 公開 API
 
 bool geminiChatText(const String &text, AiReply &out) {
   out = AiReply();
   if (!geminiReady()) {
-    out.error = "尚未設定 API Key（config.json 的 ai.api_key）";
+    out.error = "尚未設定 API 網址（config.json 的 ai.api_url）";
     return false;
   }
   if (!wifiConnected()) {
     out.error = "WiFi 未連線";
     return false;
   }
-
-  String body;
-  body.reserve(text.length() * 2 + 1024);
-  body += "{\"systemInstruction\":{\"parts\":[{\"text\":\"";
-  body += jsonEscape(g_cfg.ai.system_prompt);
-  body += "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"";
-  body += jsonEscape(text);
-  body += "\"}]}]";
-  appendGenerationConfig(body);
-  body += "}";
 
   AiEndpoint ep;
   String resp, err;
@@ -355,24 +507,59 @@ bool geminiChatText(const String &text, AiReply &out) {
     out.error = err;
     return false;
   }
+
+  String body;
+  body.reserve(text.length() * 2 + 1024);
+  if (ep.openai) {
+    // OpenAI 相容：model + messages
+    body += "{\"model\":\"";
+    body += jsonEscape(g_cfg.ai.model);
+    body += "\",\"messages\":[{\"role\":\"system\",\"content\":\"";
+    body += jsonEscape(g_cfg.ai.system_prompt);
+    body += "\"},{\"role\":\"user\",\"content\":\"";
+    body += jsonEscape(text);
+    body += "\"}]";
+    body += ",\"temperature\":";
+    body += String(g_cfg.ai.temperature, 2);
+    body += ",\"max_tokens\":";
+    body += String(g_cfg.ai.max_output_tokens);
+    body += ",\"stream\":false}";
+  } else {
+    body += "{\"systemInstruction\":{\"parts\":[{\"text\":\"";
+    body += jsonEscape(g_cfg.ai.system_prompt);
+    body += "\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"";
+    body += jsonEscape(text);
+    body += "\"}]}]";
+    appendGenerationConfig(body);
+    body += "}";
+  }
+
   if (!httpPostJson(ep, (const uint8_t *)body.c_str(), body.length(), resp, status, err)) {
     out.error = err;
     return false;
   }
   out.status = status;
-  return parseApiResponse(resp, status, out);
+  return parseApiResponse(ep, resp, status, out);
 }
 
 bool geminiChatAudio(const uint8_t *wav, size_t wavLen, AiReply &out) {
   out = AiReply();
   if (!geminiReady()) {
-    out.error = "尚未設定 API Key（config.json 的 ai.api_key）";
+    out.error = "尚未設定 API 網址（config.json 的 ai.api_url）";
     return false;
   }
   if (!wifiConnected()) {
     out.error = "WiFi 未連線";
     return false;
   }
+
+  AiEndpoint ep;
+  String err;
+  if (!buildEndpoint(ep, err)) {
+    out.error = err;
+    return false;
+  }
+  if (ep.openai) return openAiVoiceChat(ep, wav, wavLen, out);
 
   String prefix;
   prefix.reserve(1024);
@@ -403,10 +590,9 @@ bool geminiChatAudio(const uint8_t *wav, size_t wavLen, AiReply &out) {
   memcpy(body + prefix.length() + b64Len, suffix.c_str(), suffix.length());
   size_t bodyLen = prefix.length() + b64Len + suffix.length();
 
-  AiEndpoint ep;
-  String resp, err;
+  String resp;
   int status = 0;
-  bool sent = buildEndpoint(ep, err) && httpPostJson(ep, body, bodyLen, resp, status, err);
+  bool sent = httpPostJson(ep, body, bodyLen, resp, status, err);
   free(body);
 
   if (!sent) {
@@ -414,5 +600,5 @@ bool geminiChatAudio(const uint8_t *wav, size_t wavLen, AiReply &out) {
     return false;
   }
   out.status = status;
-  return parseApiResponse(resp, status, out);
+  return parseApiResponse(ep, resp, status, out);
 }

@@ -461,6 +461,7 @@ async function loadAiConfig() {
   try {
     const c = await api('/api/config');
     const ai = (c && c.ai) || {};
+    $('#aiStyle').value = ai.api_style || 'auto';
     $('#aiUrl').value = ai.api_url || '';
     $('#aiKey').value = ai.api_key || '';
     $('#aiModel').value = ai.model || '';
@@ -481,6 +482,7 @@ $('#aiSave').onclick = async () => {
   try {
     const body = JSON.stringify({
       ai: {
+        api_style: $('#aiStyle').value,
         api_url: $('#aiUrl').value.trim(),
         api_key: $('#aiKey').value.trim(),
         model: $('#aiModel').value.trim() || 'gemini-2.0-flash',

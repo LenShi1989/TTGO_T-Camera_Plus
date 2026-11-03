@@ -63,11 +63,12 @@ main{margin-left:var(--side);padding:22px 22px 60px;max-width:1000px}
 .row2{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed #1e2739;font-size:14px}
 .row2:last-child{border-bottom:0}
 .row2 b{color:var(--dim);font-weight:500;font-size:12.5px}
-input{
+input,select{
   flex:1;min-width:150px;background:#0d1420;border:1px solid var(--line);color:var(--txt);
   border-radius:10px;padding:10px 12px;font-size:14px;
 }
-input:focus,textarea:focus{outline:none;border-color:var(--acc2);box-shadow:0 0 0 3px #00c8ff1a}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc2);box-shadow:0 0 0 3px #00c8ff1a}
+select{cursor:pointer}
 textarea{
   width:100%;min-height:300px;resize:vertical;background:#0d1420;border:1px solid var(--line);
   color:var(--txt);border-radius:11px;padding:12px;font-size:13px;line-height:1.5;

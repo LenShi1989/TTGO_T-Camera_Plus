@@ -72,7 +72,9 @@ bool AppConfig::fromJson(const String &json, String *err) {
     // 網頁介面以 *** 代表「不變更」
     if (key != "***") ai.api_key = key;
     readString(a["api_url"], ai.api_url);
+    readString(a["api_style"], ai.api_style);
     readString(a["model"], ai.model);
+    readString(a["stt_model"], ai.stt_model);
     readString(a["system_prompt"], ai.system_prompt);
     readU32(a["timeout_ms"], ai.timeout_ms);
     readInt(a["max_output_tokens"], ai.max_output_tokens);
@@ -136,6 +138,11 @@ bool AppConfig::fromJson(const String &json, String *err) {
   if (ai.api_url.indexOf("://") < 0) ai.api_url = AI_DEFAULT_URL;
   ai.model.trim();
   if (ai.model.isEmpty()) ai.model = "gemini-2.0-flash";
+  ai.api_style.trim();
+  ai.api_style.toLowerCase();
+  if (ai.api_style != "gemini" && ai.api_style != "openai") ai.api_style = "auto";
+  ai.stt_model.trim();
+  if (ai.stt_model.isEmpty()) ai.stt_model = "whisper-1";
   if (font_path.isEmpty()) font_path = "/font.bin";
   if (faces_path.isEmpty()) faces_path = "/faces.csv";
   return true;
@@ -153,7 +160,9 @@ String AppConfig::toJson(bool maskSecrets) const {
   JsonObject a = doc["ai"].to<JsonObject>();
   a["api_key"] = maskSecrets && !ai.api_key.isEmpty() ? "***" : ai.api_key;
   a["api_url"] = ai.api_url;
+  a["api_style"] = ai.api_style;
   a["model"] = ai.model;
+  a["stt_model"] = ai.stt_model;
   a["system_prompt"] = ai.system_prompt;
   a["timeout_ms"] = ai.timeout_ms;
   a["max_output_tokens"] = ai.max_output_tokens;

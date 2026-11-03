@@ -472,7 +472,7 @@ static void handleVoice() {
     return;
   }
   if (!geminiReady()) {
-    sendJson(503, errJson("尚未設定 Gemini API Key（config.json 的 ai.api_key）"));
+    sendJson(503, errJson("尚未設定 AI 端點（config.json 的 ai.api_url）"));
     return;
   }
   if (!wifiConnected()) {
@@ -563,7 +563,7 @@ static void handleMicRecord() {
     return;
   }
   if (!geminiReady()) {
-    sendJson(503, errJson("尚未設定 Gemini API Key（config.json 的 ai.api_key）"));
+    sendJson(503, errJson("尚未設定 AI 端點（config.json 的 ai.api_url）"));
     return;
   }
   if (!wifiConnected()) {
@@ -749,7 +749,7 @@ static void handleChat() {
     return;
   }
   if (!geminiReady()) {
-    sendJson(503, errJson("尚未設定 Gemini API Key（config.json 的 ai.api_key）"));
+    sendJson(503, errJson("尚未設定 AI 端點（config.json 的 ai.api_url）"));
     return;
   }
   if (!wifiConnected()) {

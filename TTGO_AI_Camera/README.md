@@ -6,7 +6,7 @@ TTGO T-Camera Plus（ESP32 + ST7789 240×240 + OV2640 + I2S 麥克風 + microSD�
 
 - 所有裝置參數：SD 卡 `/config.json`
 - 網頁前端：SPIFFS（`data/index.html`、`style.css`、`app.js`）
-- AI：Google Gemini `generateContent`（文字 + WAV 語音）
+- AI：Gemini `generateContent` 或 OpenAI 相容 `/chat/completions`（文字 + WAV 語音）
 - 人臉：ESP32 核心 1.0.6 內建 `esp-face`（偵測 / 註冊 / 辨識）
 
 > 主儲存庫的硬體接腳表與其他說明請見上層 [`README.md`](../README.md)。
@@ -104,7 +104,9 @@ TTGO T-Camera Plus（ESP32 + ST7789 240×240 + OV2640 + I2S 麥克風 + microSD�
   "ai": {
     "api_key": "",
     "api_url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+    "api_style": "auto",
     "model": "gemini-2.0-flash",
+    "stt_model": "whisper-1",
     "system_prompt": "你是一個親切的繁體中文語音助理…",
     "timeout_ms": 45000,
     "max_output_tokens": 512,
@@ -143,8 +145,10 @@ TTGO T-Camera Plus（ESP32 + ST7789 240×240 + OV2640 + I2S 麥克風 + microSD�
 | `wifi.ssid` / `wifi.password` | 要連線的基地台；留空則開機進入 AP 模式 |
 | `wifi.ap_ssid` | AP 名稱前綴，實際為 `TTGO-AI-XXXX` |
 | `wifi.ap_password` | AP 密碼，至少 8 碼；留空為開放網路 |
-| `ai.api_url` | 模型端點；`{model}` 與 `{key}` 會在送出前替換，可指向自架 / 代理的 Gemini 相容服務（支援 http / https 與自訂 port） |
-| `ai.api_key` | API Key（預設 Gemini） |
+| `ai.api_url` | 模型端點；`{model}` 與 `{key}` 會在送出前替換（支援 http / https 與自訂 port） |
+| `ai.api_style` | 請求格式：`auto`（預設，依網址判斷）、`gemini`（generateContent）、`openai`（OpenAI 相容 `/chat/completions`） |
+| `ai.api_key` | API Key（預設 Gemini）；本機 OpenAI 相容服務可留空 |
+| `ai.stt_model` | OpenAI 相容模式下的語音辨識模型（預設 `whisper-1`） |
 | `ai.model` | 模型名稱；若帳號不支援請改成可用的模型 |
 | `ai.system_prompt` | 角色設定與回覆風格 |
 | `ai.max_output_tokens` | 回覆長度上限（32–2048） |
@@ -162,6 +166,28 @@ TTGO T-Camera Plus（ESP32 + ST7789 240×240 + OV2640 + I2S 麥克風 + microSD�
 
 > 網頁讀取 `/api/config` 時，`api_key` 與密碼會顯示 `***`。
 > 儲存時保留 `***` 代表「不變更」。
+
+### 使用 OpenAI 相容端點
+
+除了 Gemini，也可以把 `ai.api_url` 指向任何 OpenAI 相容的 `/v1/chat/completions`
+服務（LM Studio、Ollama、vLLM、one-api、LiteLLM…）：
+
+```json
+"ai": {
+  "api_url": "http://192.168.1.50:1234/v1",
+  "api_style": "openai",
+  "api_key": "not-needed",
+  "model": "qwen2.5-7b-instruct",
+  "stt_model": "whisper-1"
+}
+```
+
+- `api_url` 只要填到 `/v1` 即可，程式會自動補上 `/chat/completions`；
+  也可以直接填完整的 `https://主機/v1/chat/completions`。
+- 金鑰留空也能用（本機服務通常不檢查）；有金鑰時會以 `Authorization: Bearer` 送出。
+- 語音會先送到 `/v1/audio/transcriptions` 轉文字，再送出聊天請求；
+  `stt_model` 請改成你的服務支援的語音模型（預設 `whisper-1`）。
+- 若伺服器不支援語音轉文字，文字聊天仍可正常使用。
 
 ### `/faces.csv`
 
@@ -206,7 +232,8 @@ id,name,v0,v1,v2,...,v511
 
 「AI 聊天機器人」頁最下方可直接修改：
 
-- API 網址（預設 Gemini，可改成自架或代理的 Gemini 相容端點）
+- API 格式（自動偵測 / Gemini / OpenAI 相容）
+- API 網址（預設 Gemini，可改成自架、代理或 OpenAI 相容端點）
 - API Key
 - 模型名稱
 - 系統提示詞
@@ -378,6 +405,7 @@ id,name,v0,v1,v2,...,v511
 | 網頁即時影像一片黑 / 停住 | 先開 `/api/camera/frame` 單張確認；程式會自動重試與重新初始化，仍失敗請重新整理頁面。序列埠 `[CAM]` 會說明是初始化、取樣還是編碼失敗 |
 | 即時影像 fps 很低 | 每張 JPEG 都是一個新的 TCP 連線（核心 1.0.6 的 WebServer 一律 `Connection: close`），請保持 `framesize=5`（QVGA）、`jpeg_quality` ≥ 10，並關閉其他佔用 Wi-Fi 的傳輸 |
 | Gemini HTTP 400/403 | API Key 錯誤、額度用完，或 `ai.model` 不支援 |
+| OpenAI HTTP 404 `Invalid URL (POST /v1)` | 網址指向 OpenAI 相容服務，但格式仍用 Gemini。請把 `ai.api_style` 設為 `openai`，或把網址填成 `.../v1/chat/completions` |
 | Gemini HTTP 429 | 免費額度限制，稍後再試 |
 | WiFi 連不上 | 裝置會開 AP，手機連 `TTGO-AI-XXXX` 後到 `http://192.168.4.1` 重設 |
 | 編譯 `fd_forward.h: No such file` | ESP32 核心不是 1.0.6 |

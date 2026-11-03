@@ -19,7 +19,9 @@ struct WifiCfg {
 struct AiCfg {
   String api_key;
   String api_url = AI_DEFAULT_URL;
+  String api_style = "auto"; // auto / gemini / openai（OpenAI 相容 chat/completions）
   String model = "gemini-2.0-flash";
+  String stt_model = "whisper-1"; // OpenAI 相容模式下的語音辨識模型
   String system_prompt;
   uint32_t timeout_ms = 45000;
   int max_output_tokens = 512;

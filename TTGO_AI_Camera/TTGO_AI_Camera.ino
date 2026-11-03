@@ -376,8 +376,8 @@ static void chatPrepareScreen(const char *title) {
 static void screenChat() {
   if (!geminiReady()) {
     screenMessage("AI聊天機器人",
-                  "尚未設定 Gemini API Key。\n\n請編輯 SD 卡 /config.json 的 ai.api_key，"
-                  "或到網頁「AI 聊天機器人」頁籤的 AI 設定填入。");
+                  "尚未設定 AI 端點。\n\n請編輯 SD 卡 /config.json 的 ai.api_url / "
+                  "ai.api_key，或到網頁「AI 聊天機器人」頁籤的 AI 設定填入。");
     return;
   }
   if (!wifiConnected()) {

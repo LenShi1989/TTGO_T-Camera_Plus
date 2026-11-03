@@ -114,6 +114,11 @@
     <div class="card">
       <h2>AI 設定 <span class="muted">（寫入 SD 卡 /config.json）</span></h2>
       <div class="row">
+        <select id="aiStyle">
+          <option value="auto">自動偵測格式</option>
+          <option value="gemini">Gemini（generateContent）</option>
+          <option value="openai">OpenAI 相容（chat/completions）</option>
+        </select>
         <input id="aiUrl" placeholder="API 網址，支援 {model} / {key} 佔位符（可自訂供應商）">
       </div>
       <div class="row">

@@ -229,7 +229,9 @@ u32 字數 | u32 索引位移 | u32 資料位移
   "ai": {
     "api_key": "",
     "api_url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+    "api_style": "auto",
     "model": "gemini-2.0-flash",
+    "stt_model": "whisper-1",
     "system_prompt": "你是一個親切的繁體中文語音助理…",
     "timeout_ms": 45000,
     "max_output_tokens": 512,
@@ -266,8 +268,10 @@ u32 字數 | u32 索引位移 | u32 資料位移
 | `wifi.ssid` / `wifi.password` | 要連線的基地台；留空則開機直接進入 AP 模式              |
 | `wifi.ap_ssid`                | AP 名稱前綴，實際會加上 MAC 末四碼，例如 `TTGO-AI-1A2B` |
 | `wifi.ap_password`            | AP 密碼，至少 8 碼；留空則為開放網路                    |
-| `ai.api_url`                  | 模型端點，`{model}` / `{key}` 會自動替換；可指向自架或代理的 Gemini 相容服務 |
-| `ai.api_key`                  | API Key（預設 Gemini）                                  |
+| `ai.api_url`                  | 模型端點，`{model}` / `{key}` 會自動替換；可指向自架、代理或 OpenAI 相容服務 |
+| `ai.api_style`                | `auto`（預設）、`gemini`、`openai`；OpenAI 相容服務請設為 `openai` |
+| `ai.api_key`                  | API Key（預設 Gemini）；本機服務可留空                 |
+| `ai.stt_model`                | OpenAI 相容模式的語音辨識模型，預設 `whisper-1`        |
 | `ai.model`                    | 模型名稱，預設 `gemini-2.0-flash`                       |
 | `ai.system_prompt`            | 系統提示詞（角色設定），可自由修改                      |
 | `ai.max_output_tokens`        | 回覆長度上限（32–2048）                                 |
@@ -284,6 +288,12 @@ u32 字數 | u32 索引位移 | u32 資料位移
 | `web.user` / `web.password`   | 網頁 Basic Auth；`user` 留空表示不需要密碼              |
 
 > 透過網頁介面修改時，`api_key` / 密碼欄位顯示 `***` 代表「不變更」。
+
+### 使用 OpenAI 相容端點
+
+`ai.api_style` 設為 `openai` 後，`ai.api_url` 可指向 LM Studio / Ollama / one-api 等
+OpenAI 相容服務（填到 `/v1` 即可，程式會自動補 `/chat/completions`）；
+語音則走 `/v1/audio/transcriptions`，模型由 `ai.stt_model` 指定（預設 `whisper-1`）。
 
 ### `/faces.csv`
 
@@ -496,6 +506,7 @@ TFT 待機儀表板（唯讀）
 | 網頁即時影像黑畫面 / 卡住             | 先用 `/api/camera/frame` 確認單張影像；序列埠 `[CAM]` 會指出初始化 / 取樣 / 編碼哪一段失敗，程式會自動重試                |
 | 即時影像 fps 很低                     | 核心 1.0.6 的 WebServer 每張 JPEG 都重新建立 TCP 連線；請保持 `framesize=5`（QVGA）並把 `jpeg_quality` 設在 10–15           |
 | Gemini 回 `HTTP 400/403`              | API Key 錯誤、額度用完，或 `ai.model` 名稱不支援                                                                    |
+| OpenAI 回 `HTTP 404：Invalid URL (POST /v1)` | 網址是 OpenAI 相容服務，但 `ai.api_style` 仍為 Gemini。請改成 `openai`，或把網址填成 `.../v1/chat/completions` |
 | Gemini 回 `HTTP 429`                  | 免費額度限制，稍後再試                                                                                              |
 | WiFi 連不上                           | 開機會自動進入 AP 模式，用手機連 `TTGO-AI-XXXX` 到 `http://192.168.4.1` 重設                                        |
 | 編譯錯誤 `fd_forward.h: No such file` | ESP32 核心不是 1.0.6                                                                                                |
