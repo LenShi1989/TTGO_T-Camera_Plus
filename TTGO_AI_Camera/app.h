@@ -3,7 +3,6 @@
 
 enum AppAction : uint16_t {
   ACT_NONE = 0,
-  ACT_SUBMENU = 1,
   ACT_BACK = 2,
   ACT_WIFI_INFO = 10,
   ACT_SYS_STATUS = 11,
@@ -14,7 +13,6 @@ enum AppAction : uint16_t {
   ACT_AI_CHAT = 30,
   ACT_AI_ORB = 31,
   ACT_AI_CLEAR = 32,
-  ACT_BME_CHART = 40,
   ACT_FACE_ENROLL = 50,
   ACT_FACE_DELETE = 51,
   ACT_FACE_EXPORT = 52,
@@ -26,16 +24,10 @@ enum AppAction : uint16_t {
   ACT_REBOOT = 61,
 };
 
-// 選單項目（定義在 app.h，避免 .ino 自動產生原型時找不到型別）
-struct MenuItem {
-  const char *label;
-  uint16_t action;
-  const char *hint;
-};
-
 // 由 TTGO_AI_Camera.ino 提供
 void appRunAction(uint16_t action);
-void appShowMenu();
+void appShowIdle();  // 顯示 TFT 待機儀表板
+void appIdleTick();  // 待機時每 5 秒更新儀表板
 String appStatusJson();
 String appHistoryJson();
 void appClearHistory();
@@ -54,7 +46,7 @@ typedef void (*AiTickFn)(void);
 bool appAiRun(bool audio, const String &text, const uint8_t *wav, size_t wavLen, AiReply &out,
               AiTickFn tick);
 
-// 網頁語音 / 文字請求期間，讓 TFT 顯示球體動畫（不必進入本機的選單畫面）
+// 網頁語音 / 文字請求期間，讓 TFT 顯示球體動畫（不必切換到本機畫面）
 void appOrbThinking();
 void appOrbTick();
 

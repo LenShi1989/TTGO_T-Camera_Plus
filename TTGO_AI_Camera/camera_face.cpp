@@ -5,7 +5,6 @@
 #include <string.h>
 
 #include "app_config.h"
-#include "bme280.h"
 #include "board_pins.h"
 #include "display.h"
 #include "esp_camera.h"
@@ -19,12 +18,24 @@
 #define FACE_VEC_SIZE 512
 #define FACE_NAME_MAX 24
 
+// 網頁 / TFT 串流最大只用 QVGA：再大不但 fps 掉，人臉偵測也會變慢。
+#define CAM_STREAM_MAX_FS FRAMESIZE_QVGA
+
 struct FaceEntry {
   char name[FACE_NAME_MAX];
   float *vec;
 };
 
 static bool s_camReady = false;
+static uint32_t s_nextInitTry = 0;  // 初始化失敗後的冷卻時間
+static uint32_t s_lastReinit = 0;   // 上次重新初始化時間
+static uint8_t s_reinitCount = 0;   // 連續重新初始化次數
+static uint32_t s_grabErrors = 0;   // 取樣失敗次數（診斷用）
+static uint32_t s_fps = 0;
+static uint32_t s_fpsFrames = 0;
+static uint32_t s_fpsStamp = 0;
+static uint32_t s_lastBytes = 0;
+
 static FaceEntry *s_faces = nullptr;
 static int s_faceCount = 0;
 static int s_faceCap = 0;
@@ -39,6 +50,17 @@ static bool s_rgbFresh = false; // s_rgb 內是否為目前這張影格的解碼
 
 bool camBegin() {
   if (s_camReady) return true;
+
+  // 初始化失敗後先冷卻 5 秒，避免每個 HTTP 請求都卡在 1~2 秒的重試上。
+  uint32_t now = millis();
+  if (s_nextInitTry && (int32_t)(now - s_nextInitTry) < 0) return false;
+
+  int fs = g_cfg.camera.framesize;
+  if (fs < 0) fs = 0;
+  if (fs > CAM_STREAM_MAX_FS) fs = CAM_STREAM_MAX_FS;
+  int quality = g_cfg.camera.jpeg_quality;
+  if (quality < 8) quality = 8;
+  if (quality > 30) quality = 30;
 
   camera_config_t cfg = {};
   cfg.pin_pwdn = CAM_PIN_PWDN;
@@ -63,49 +85,88 @@ bool camBegin() {
   // 用 JPEG 串流：單張只有十幾 KB，網頁即時影像比 RGB565 轉檔快很多；
   // 人臉偵測與 TFT 畫面再用 fmt2rgb888 解碼。
   cfg.pixel_format = PIXFORMAT_JPEG;
-  cfg.frame_size = (framesize_t)g_cfg.camera.framesize;
-  cfg.jpeg_quality = g_cfg.camera.jpeg_quality;
+  cfg.frame_size = (framesize_t)fs;
+  cfg.jpeg_quality = quality;
   cfg.fb_count = 2;
 
   esp_err_t err = esp_camera_init(&cfg);
   if (err != ESP_OK) {
-    logLine("CAM", "相機初始化失敗 (0x%x)", (unsigned)err);
+    // 少數模組在 JPEG 模式下無法配置雙緩衝，退回單緩衝再試一次。
+    // 先 deinit 清掉失敗時殘留的 DMA / PSRAM，否則第二次 init 可能直接失敗。
+    logLine("CAM", "雙緩衝初始化失敗 (0x%x)，改用單緩衝重試", (unsigned)err);
+    esp_camera_deinit();
+    cfg.fb_count = 1;
+    err = esp_camera_init(&cfg);
+  }
+  if (err != ESP_OK) {
+    s_nextInitTry = millis() + 5000;
+    logLine("CAM", "相機初始化失敗 (0x%x)，5 秒後再試（請檢查鏡頭排線 / PSRAM）",
+            (unsigned)err);
     return false;
   }
 
   sensor_t *s = esp_camera_sensor_get();
   if (s) {
+    s->set_framesize(s, (framesize_t)fs);
+    s->set_quality(s, quality);
     if (g_cfg.camera.vflip) s->set_vflip(s, 1);
     if (g_cfg.camera.hmirror) s->set_hmirror(s, 1);
   }
 
-  // 相機 SCCB（I2C0）與 BME280（I2C1）共用 GPIO 18/23，初始化完成後
-  // 一定要把 I2C1 綁回來，否則 BME280 會開始讀不到數值。
-  bmeRebindBus();
-
   s_camReady = true;
-  logLine("CAM", "OV2640 就緒 (JPEG)");
+  s_nextInitTry = 0;
+  s_reinitCount = 0;
+  s_fps = 0;
+  s_fpsFrames = 0;
+  s_fpsStamp = millis();
+  s_lastBytes = 0;
+  logLine("CAM", "OV2640 就緒：JPEG %ux%u q=%d fb=%u", resolution[fs].width,
+          resolution[fs].height, quality, (unsigned)cfg.fb_count);
   return true;
 }
 
-// 取一張影格；失敗時重新初始化相機再試一次（供電不穩或相機卡住時可自癒）
+// 取一張影格；失敗時重新初始化相機再試一次（供電不穩或相機卡住時可自癒）。
+// 重新初始化有節流：連續失敗 3 次或 3 秒內只做一次，避免拖垮整個網頁。
 static camera_fb_t *grabFrame() {
   camera_fb_t *fb = esp_camera_fb_get();
-  if (fb) return fb;
+  if (fb) {
+    s_reinitCount = 0;
+    return fb;
+  }
+
+  s_grabErrors++;
+  if (s_grabErrors % 20 == 1) {
+    logLine("CAM", "取樣失敗（累計 %u 次，heap %u / PSRAM %u）", (unsigned)s_grabErrors,
+            (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
+  }
   if (!s_camReady) return nullptr;
-  logLine("CAM", "取樣失敗，重新初始化相機");
+  if (s_reinitCount >= 3) return nullptr;
+
+  uint32_t now = millis();
+  if (s_lastReinit && (uint32_t)(now - s_lastReinit) < 3000) return nullptr;
+  s_lastReinit = now;
+  s_reinitCount++;
+
+  logLine("CAM", "重新初始化相機（第 %u 次）", (unsigned)s_reinitCount);
   camEnd();
   if (!camBegin()) return nullptr;
-  return esp_camera_fb_get();
+  fb = esp_camera_fb_get();
+  if (!fb) s_grabErrors++;
+  return fb;
 }
 
 bool camReady() { return s_camReady; }
+
+uint32_t camFps() { return s_fps; }
+uint32_t camLastFrameBytes() { return s_lastBytes; }
+uint32_t camErrorCount() { return s_grabErrors; }
 
 void camEnd() {
   if (!s_camReady) return;
   esp_camera_deinit();
   s_camReady = false;
-  bmeRebindBus();
+  s_fps = 0;
+  s_fpsFrames = 0;
 }
 
 static bool ensureRgbBuffer(int w, int h) {
@@ -164,11 +225,35 @@ static bool displayFrame(camera_fb_t *fb, bool decoded) {
   return true;
 }
 
-bool camPreviewToDisplay() {
+camera_fb_t *camGrabFrame() {
   camera_fb_t *fb = grabFrame();
+  if (!fb) return nullptr;
+
+  uint32_t now = millis();
+  s_lastBytes = fb->len;
+  s_fpsFrames++;
+  if (s_fpsStamp == 0) s_fpsStamp = now;
+  uint32_t dt = now - s_fpsStamp;
+  if (dt >= 5000) {
+    s_fps = (uint32_t)((uint64_t)s_fpsFrames * 1000ULL / dt);
+    s_fpsFrames = 0;
+    s_fpsStamp = now;
+    logLine("CAM", "串流 %u fps，影格 %u bytes，heap %u KB / PSRAM %u KB",
+            (unsigned)s_fps, (unsigned)s_lastBytes, (unsigned)(ESP.getFreeHeap() / 1024),
+            (unsigned)(ESP.getFreePsram() / 1024));
+  }
+  return fb;
+}
+
+void camReturnFrame(camera_fb_t *fb) {
+  if (fb) esp_camera_fb_return(fb);
+}
+
+bool camPreviewToDisplay() {
+  camera_fb_t *fb = camGrabFrame();
   if (!fb) return false;
   bool ok = displayFrame(fb, false);
-  esp_camera_fb_return(fb);
+  camReturnFrame(fb);
   return ok;
 }
 
@@ -176,7 +261,7 @@ bool camSnapshotJpeg(uint8_t **out, size_t *outLen) {
   *out = nullptr;
   *outLen = 0;
   if (!s_camReady) return false;
-  camera_fb_t *fb = grabFrame();
+  camera_fb_t *fb = camGrabFrame();
   if (!fb) return false;
 
   bool ok = false;
@@ -194,7 +279,7 @@ bool camSnapshotJpeg(uint8_t **out, size_t *outLen) {
                  (uint8_t)g_cfg.camera.jpeg_quality, out, outLen);
   }
 
-  esp_camera_fb_return(fb);
+  camReturnFrame(fb);
   return ok;
 }
 

@@ -31,12 +31,6 @@ struct AudioCfg {
   int gain = 1; // 1 = 原始音量, 2/4 = 放大
 };
 
-struct BmeCfg {
-  bool enabled = true;
-  uint8_t address = 0x76;
-  uint32_t interval_ms = 2000;
-};
-
 struct CameraCfg {
   int xclk_hz = 20000000;
   int framesize = 5; // FRAMESIZE_QVGA
@@ -50,10 +44,6 @@ struct CameraCfg {
 
 struct DisplayCfg {
   int brightness = 255; // 0..255
-  uint32_t nav_timeout_ms = 2500;
-  // 本板沒有實體按鍵，預設關閉「停留 2.5 秒自動執行」的選單倒數，
-  // 一切改由網頁前端操作；設成 true 才會恢復舊的 RST 導覽行為。
-  bool auto_run = false;
 };
 
 struct WebCfg {
@@ -66,7 +56,6 @@ struct AppConfig {
   WifiCfg wifi;
   AiCfg ai;
   AudioCfg audio;
-  BmeCfg bme;
   CameraCfg camera;
   DisplayCfg display;
   WebCfg web;

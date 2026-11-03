@@ -38,7 +38,6 @@ const loaders = {
   sd() { loadSd(sdPath); },
   wifi() { refreshWifi(); },
   ai() { loadHistory(); loadAiConfig(); loadMic(); },
-  env() { envTick(); timers.env = setInterval(envTick, 2000); },
   cam() { loadFaces(); camStart(); }
 };
 
@@ -55,7 +54,12 @@ function go(view) {
 $$('#nav button').forEach(b => b.onclick = () => go(b.dataset.view));
 $('#burger').onclick = () => document.body.classList.toggle('nav-open');
 $('#btnMenu').onclick = async () => {
-  try { await api('/api/action?code=2', { method: 'POST' }); toast('TFT 已回到主選單'); }
+  try { await api('/api/action?code=2', { method: 'POST' }); toast('TFT 已回到待機畫面'); }
+  catch (e) { toast('裝置忙碌中', true); }
+};
+
+$('#btnBright').onclick = async () => {
+  try { await api('/api/action?code=12', { method: 'POST' }); toast('TFT 亮度已切換一級'); }
   catch (e) { toast('裝置忙碌中', true); }
 };
 
@@ -76,7 +80,7 @@ async function refreshStatus() {
       ['訊號', (s.wifi.rssi || 0) + ' dBm'], ['AP 熱點', s.wifi.apActive ? s.wifi.ap : '未開啟'],
       ['可用記憶體', s.sys.heap + ' KB'], ['PSRAM', s.sys.psram],
       ['SD 卡', s.sys.sd], ['人臉 ID', s.faces + ' 個'],
-      ['BME280', s.bme ? '已連接' : '未偵測'], ['電池', s.power],
+      ['電池', s.power],
       ['執行時間', s.sys.uptime], ['AI 金鑰', s.ai ? '已設定' : '未設定']
     ];
     $('#statGrid').innerHTML = cards.map(c =>
@@ -322,70 +326,6 @@ $('#wClear').onclick = async () => {
   refreshWifi();
 };
 
-/* ---------------- BME280 ---------------- */
-const env = { t: [], h: [], p: [] };
-
-async function envTick() {
-  try {
-    const d = await api('/api/sensors');
-    if (d.ok) {
-      env.t.push(d.t); env.h.push(d.h); env.p.push(d.p);
-      ['t', 'h', 'p'].forEach(k => { if (env[k].length > 120) env[k].shift(); });
-      $('#envGrid').innerHTML = [
-        ['溫度', d.t.toFixed(1) + ' °C'], ['濕度', d.h.toFixed(1) + ' %'],
-        ['大氣壓力', d.p.toFixed(1) + ' hPa']
-      ].map(c => `<div class="kv"><b>${c[0]}</b><span>${c[1]}</span></div>`).join('');
-    } else {
-      $('#envGrid').innerHTML = '<div class="kv"><b>BME280</b><span>未偵測</span></div>';
-    }
-    drawChart('#cT', env.t, 0, 50, '#ff6b6b', '°C');
-    drawChart('#cH', env.h, 0, 100, '#3fd8e8', '%');
-    drawChart('#cP', env.p, 950, 1050, '#4ade80', 'hPa');
-  } catch (e) {}
-}
-
-function drawChart(sel, arr, lo, hi, color, unit) {
-  const c = $(sel);
-  if (!c) return;
-  const w = c.clientWidth || 600, h = 150;
-  const dpr = window.devicePixelRatio || 1;
-  if (c.width !== Math.round(w * dpr)) {
-    c.width = Math.round(w * dpr);
-    c.height = Math.round(h * dpr);
-  }
-  const g = c.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, w, h);
-  const pad = { l: 46, r: 12, t: 12, b: 20 };
-  const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
-  g.strokeStyle = '#1e2739'; g.fillStyle = '#8a97af';
-  g.font = '11px system-ui'; g.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = pad.t + ph * i / 4;
-    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(w - pad.r, y); g.stroke();
-    g.fillText((hi - (hi - lo) * i / 4).toFixed(0), 8, y + 4);
-  }
-  g.fillStyle = color;
-  g.fillText(unit, w - pad.r - 20, pad.t + 10);
-  if (arr.length < 2) return;
-  g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
-  arr.forEach((v, i) => {
-    const x = pad.l + pw * i / (arr.length - 1);
-    let t = (v - lo) / (hi - lo);
-    t = Math.max(0, Math.min(1, t));
-    const y = pad.t + ph * (1 - t);
-    i ? g.lineTo(x, y) : g.moveTo(x, y);
-  });
-  g.stroke();
-}
-
-window.addEventListener('resize', () => {
-  if (!$('#view-env').classList.contains('on')) return;
-  drawChart('#cT', env.t, 0, 50, '#ff6b6b', '°C');
-  drawChart('#cH', env.h, 0, 100, '#3fd8e8', '%');
-  drawChart('#cP', env.p, 950, 1050, '#4ade80', 'hPa');
-});
-
 /* ---------------- AI 聊天 ---------------- */
 let msgs = [];
 
@@ -563,13 +503,18 @@ $('#aiSave').onclick = async () => {
 };
 
 /* ---------------- CAMERA ---------------- */
-let camOn = false, camFrameTimer = 0, camFaceTimer = 0, camFetching = false, camFails = 0;
-const CAM_FRAME_MS = 150, CAM_FACE_MS = 1500;
+let camOn = false, camFrameTimer = 0, camFaceTimer = 0, camBusy = false, camFaceBusy = false, camFails = 0;
+let camUrl = '';
+// 每張 JPEG 都要重新建立 TCP 連線（ESP32 WebServer 一律 Connection: close），
+// 因此不要用太短的固定間隔；下面會再依實際往返時間自動放慢。
+const CAM_FRAME_MS = 220, CAM_FACE_MS = 3000, CAM_RETRY_MS = 1200;
 
 function camStart() {
   if (camOn) return;
   camOn = true;
   camFails = 0;
+  clearTimeout(camFrameTimer);
+  clearTimeout(camFaceTimer);
   $('#camHint').textContent = '即時影像';
   $('#camState').textContent = '連線中…';
   camTick();
@@ -580,58 +525,86 @@ function stopCam() {
   camOn = false;
   clearTimeout(camFrameTimer);
   clearTimeout(camFaceTimer);
-  camFetching = false;
+  camBusy = false;
+  camFaceBusy = false;
+  if (camUrl) {
+    URL.revokeObjectURL(camUrl);
+    camUrl = '';
+  }
   const hint = $('#camHint');
   if (hint) hint.textContent = '停止';
 }
 
 async function camTick() {
   if (!camOn) return;
-  if (!camFetching) {
-    camFetching = true;
-    try {
-      const r = await fetch('/api/camera/frame?t=' + Date.now(), { cache: 'no-store' });
-      if (r.ok) {
-        const blob = await r.blob();
-        if (blob.size > 100) {
+  if (camBusy) { camFrameTimer = setTimeout(camTick, 60); return; }
+
+  camBusy = true;
+  let delay = CAM_FRAME_MS;
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/camera/frame?t=' + Date.now(), { cache: 'no-store' });
+    if (r.ok) {
+      const blob = await r.blob();
+      if (blob.size > 100) {
+        const url = URL.createObjectURL(blob);
+        const img = $('#camImg');
+        const old = camUrl;
+        camUrl = url;
+        img.onload = () => {
+          // 只保留目前這張的 blob URL，避免長時間串流累積記憶體
+          if (old && old !== url) URL.revokeObjectURL(old);
+          if (camUrl !== url) URL.revokeObjectURL(url);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          if (camUrl === url) camUrl = '';
+          $('#camState').textContent = '影像解碼失敗，請按「開始即時影像」重試';
+        };
+        img.src = url;
+        const fps = r.headers.get('X-Cam-Fps');
+        $('#camHint').textContent = (fps && fps !== '0' ? fps + ' fps' : 'LIVE') +
+          ' · ' + Math.max(1, Math.round(blob.size / 1024)) + ' KB';
+        if (camFails) {
           camFails = 0;
-          const url = URL.createObjectURL(blob);
-          const img = $('#camImg');
-          img.onload = () => URL.revokeObjectURL(url);
-          img.onerror = () => {
-            URL.revokeObjectURL(url);
-            $('#camState').textContent = '影像解碼失敗，請重新開始';
-          };
-          img.src = url;
+          $('#camState').textContent = '串流中';
         }
       } else {
-        const txt = await r.text();
         camFails++;
-        $('#camState').textContent = '影像錯誤：' + (txt || ('HTTP ' + r.status));
-        if (camFails >= 4) {
-          stopCam();
-          toast('即時影像中斷，請按「開始即時影像」重試', true);
-          return;
-        }
       }
-    } catch (e) {
+    } else {
       camFails++;
+      const txt = (await r.text()) || ('HTTP ' + r.status);
+      $('#camState').textContent = '影像重試中（' + camFails + '）：' + txt;
+      delay = Math.min(4000, CAM_RETRY_MS * camFails);
     }
-    camFetching = false;
+  } catch (e) {
+    camFails++;
+    $('#camState').textContent = '影像重試中（' + camFails + '）：' + e.message;
+    delay = Math.min(4000, CAM_RETRY_MS * camFails);
   }
-  if (camOn) camFrameTimer = setTimeout(camTick, CAM_FRAME_MS);
+
+  camBusy = false;
+  const spent = performance.now() - t0;
+  if (camOn) camFrameTimer = setTimeout(camTick, Math.max(delay, spent));
 }
 
 async function camFaceTick() {
   if (!camOn) return;
-  try {
-    const d = await api('/api/camera/face?recognize=1');
-    drawOverlay(d);
-    const st = $('#camState');
-    if (!d.detected) st.textContent = '未偵測到人臉';
-    else if (d.recognized) st.textContent = '辨識成功：' + d.name + '（相似度 ' + d.score.toFixed(2) + '）';
-    else st.textContent = '未知人臉（相似度 ' + d.score.toFixed(2) + ' / 門檻 ' + d.threshold + '）';
-  } catch (e) {}
+  if (!camFaceBusy) {
+    camFaceBusy = true;
+    try {
+      const d = await api('/api/camera/face?recognize=1');
+      if (camOn) {
+        drawOverlay(d);
+        const st = $('#camState');
+        if (!d.detected) st.textContent = '未偵測到人臉';
+        else if (d.recognized) st.textContent = '辨識成功：' + d.name + '（相似度 ' + d.score.toFixed(2) + '）';
+        else st.textContent = '未知人臉（相似度 ' + d.score.toFixed(2) + ' / 門檻 ' + d.threshold + '）';
+      }
+    } catch (e) {}
+    camFaceBusy = false;
+  }
   if (camOn) camFaceTimer = setTimeout(camFaceTick, CAM_FACE_MS);
 }
 

@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "esp_camera.h"
+
 struct FaceResult {
   bool detected = false;
   bool recognized = false;
@@ -20,6 +22,16 @@ bool camPreviewToDisplay();
 
 // 擷取一張並轉成 JPEG（由呼叫端 free）
 bool camSnapshotJpeg(uint8_t **out, size_t *outLen);
+
+// 零複製取樣：直接取得相機緩衝區，用完務必呼叫 camReturnFrame()。
+// 網頁即時影像走這條路，省掉每張 JPEG 的 ps_malloc + memcpy。
+camera_fb_t *camGrabFrame();
+void camReturnFrame(camera_fb_t *fb);
+
+// 串流統計（給 /api/status 與序列埠診斷用）
+uint32_t camFps();
+uint32_t camLastFrameBytes();
+uint32_t camErrorCount();
 
 // ---- 人臉資料 ----
 int faceCount();

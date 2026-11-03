@@ -1,15 +1,12 @@
 // =====================================================================
 //  TTGO T-Camera Plus — AI 相機助理
-//  ESP32 / ST7789 240x240 / OV2640 / I2S 麥克風 / microSD / BME280
+//  ESP32 / ST7789 240x240 / OV2640 / I2S 麥克風 / microSD
 //
 //  操作方式：本板沒有使用者按鍵，RST 直接接 EN。
-//    - 主要操作介面是 SPIFFS 內的網頁（側邊欄六大頁籤）。
-//    - 冷開機：顯示主選單，游標不亮。
-//    - 預設 display.auto_run = false，選單不會倒數自動執行。
-//    - 每按一次 RST 只會重新開機並把游標往下移動一格，不會執行功能。
-//    - 在子畫面按 RST：重新開機後回到選單，游標移到下一項。
-//    - 取消 / 離開目前畫面請按網頁側邊欄最下方的「TFT 顯示主選單」。
-//  另外提供序列埠指令，方便量產測試與除錯。
+//    - 所有操作都在 SPIFFS 內的網頁完成（側邊欄五大頁籤）。
+//    - TFT 沒有選單，只顯示待機儀表板：WiFi / IP / SD / 人臉 / 麥克風。
+//    - 網頁按下動作後 TFT 才切換到對應畫面，按「TFT 回到待機畫面」返回。
+//    - 序列埠只輸出除錯訊息，不再接受指令。
 // =====================================================================
 
 #include <Arduino.h>
@@ -22,15 +19,12 @@
 #include "app.h"
 #include "app_config.h"
 #include "audio.h"
-#include "bme280.h"
 #include "board_pins.h"
 #include "camera_face.h"
 #include "display.h"
 #include "font.h"
 #include "gemini.h"
-#include "nav.h"
 #include "power.h"
-#include "serial_console.h"
 #include "storage.h"
 #include "util.h"
 #include "webui.h"
@@ -46,12 +40,6 @@ volatile bool g_appBusy = false;
 
 static volatile uint16_t s_pendingAction = 0;
 
-static bool s_countdownActive = false;
-static uint32_t s_countdownStart = 0;
-static uint32_t s_countdownEnd = 0;
-
-static int s_lastCountdownW = -1;
-
 // ---- 對話記錄 ----
 #define HIST_TURNS 10
 struct ChatTurn {
@@ -62,14 +50,6 @@ static ChatTurn s_turns[HIST_TURNS];
 static int s_turnCount = 0;
 static int s_turnNext = 0;
 
-// ---- 環境序列 ----
-#define ENV_MAX 120
-static float s_envT[ENV_MAX];
-static float s_envH[ENV_MAX];
-static float s_envP[ENV_MAX];
-static int s_envN = 0;
-static int s_envHead = 0;
-
 // ---- 顯示亮度循環 ----
 static const uint8_t kBrightLevels[] = {255, 170, 100, 40};
 static int s_brightIdx = 0;
@@ -79,61 +59,6 @@ static int s_brightIdx = 0;
 static String s_replyLines[REPLY_LINES];
 static int s_replyLineCount = 0;
 static int s_replyPage = 0;
-
-// ---- 動態人臉刪除選單 ----
-#define DYN_MAX 20
-static char s_dynLabels[DYN_MAX][32];
-static MenuItem s_dynItems[DYN_MAX];
-static int s_dynCount = 0;
-
-// =====================================================================
-//  選單資料
-// =====================================================================
-
-static const MenuItem kMainMenu[] = {
-    {"系統狀態", ACT_SUBMENU, "WiFi / 狀態 / 顯示"},
-    {"WiFi設定", ACT_SUBMENU, "掃描 / 手動 / 清除"},
-    {"AI聊天機器人", ACT_SUBMENU, "語音對話 / 球體動畫"},
-    {"環境參數", ACT_BME_CHART, "BME280 折線圖"},
-    {"CAMERA", ACT_SUBMENU, "人臉設定 / 人臉辨識"},
-    {"關於本機", ACT_ABOUT, "版本與記憶體資訊"},
-};
-static const int kMainCount = 6;
-
-static const MenuItem kSysMenu[] = {
-    {"WiFi連線資訊", ACT_WIFI_INFO, "SSID / IP / 訊號"},
-    {"系統狀態", ACT_SYS_STATUS, "記憶體 / SD / 電池"},
-    {"顯示", ACT_DISPLAY_TOGGLE, "切換螢幕亮度"},
-    {"返回", ACT_BACK, "回上一層"},
-};
-
-static const MenuItem kWifiMenu[] = {
-    {"網路掃描SSID", ACT_WIFI_SCAN, "列出附近基地台"},
-    {"手動輸入SSID+密碼", ACT_WIFI_MANUAL, "由網頁或序列埠輸入"},
-    {"清除連線設定", ACT_WIFI_CLEAR, "清除後改用 AP 模式"},
-    {"返回", ACT_BACK, "回上一層"},
-};
-
-static const MenuItem kAiMenu[] = {
-    {"麥克風收音", ACT_AI_CHAT, "錄音並與 Gemini 對話"},
-    {"TFT OLED顯示", ACT_AI_ORB, "球體動畫 / 最近回覆"},
-    {"清除對話記錄", ACT_AI_CLEAR, "清空本機歷史"},
-    {"返回", ACT_BACK, "回上一層"},
-};
-
-static const MenuItem kCamMenu[] = {
-    {"串流影像", ACT_CAM_STREAM, "TFT 即時畫面"},
-    {"人臉設定", ACT_SUBMENU, "加入 / 刪除 / 匯出"},
-    {"人臉辨識", ACT_FACE_RECOGNIZE, "綠框成功 / 紅框失敗"},
-    {"返回", ACT_BACK, "回上一層"},
-};
-
-static const MenuItem kFaceMenu[] = {
-    {"加入人臉ID", ACT_FACE_ENROLL, "面向鏡頭約 3 秒"},
-    {"刪除人臉ID", ACT_FACE_DELETE, "選擇要刪除的 ID"},
-    {"人臉ID參數CSV存到SD卡", ACT_FACE_EXPORT, "寫入 /faces.csv"},
-    {"返回", ACT_BACK, "回上一層"},
-};
 
 // =====================================================================
 //  小工具
@@ -168,207 +93,79 @@ static String humanBytes(uint64_t v) {
 }
 
 // =====================================================================
-//  選單結構
+//  待機儀表板
+//  本板沒有實體按鍵：TFT 只顯示狀態，所有操作都由網頁觸發。
 // =====================================================================
 
-static int menuCount() {
-  NavState &n = nav();
-  if (n.depth == 3) return n.dynActive ? (int)n.dynCount : 0;
-  if (n.depth == 0) return kMainCount;
-  if (n.depth == 1) {
-    switch (n.cursor[0]) {
-      case 0: return 4;
-      case 1: return 4;
-      case 2: return 4;
-      case 4: return 4;
-      default: return 0;
-    }
-  }
-  if (n.depth == 2) return 4;
-  return 0;
+static bool s_idle = true;
+static uint32_t s_idleStamp = 0;
+
+static String clipText(const String &src, size_t maxChars) {
+  if (src.length() <= maxChars) return src;
+  if (maxChars <= 1) return src.substring(0, maxChars);
+  return src.substring(0, maxChars - 1) + "…";
 }
 
-static MenuItem menuItemAt(int idx) {
-  NavState &n = nav();
-  MenuItem none = {"", ACT_NONE, nullptr};
-  if (idx < 0) return none;
-
-  if (n.depth == 3) {
-    if (n.dynActive && idx < n.dynCount && idx < DYN_MAX) return s_dynItems[idx];
-    return none;
-  }
-  if (n.depth == 0) {
-    if (idx < kMainCount) return kMainMenu[idx];
-    return none;
-  }
-  if (n.depth == 1) {
-    switch (n.cursor[0]) {
-      case 0:
-        if (idx < 4) return kSysMenu[idx];
-        break;
-      case 1:
-        if (idx < 4) return kWifiMenu[idx];
-        break;
-      case 2:
-        if (idx < 4) return kAiMenu[idx];
-        break;
-      case 4:
-        if (idx < 4) return kCamMenu[idx];
-        break;
-      default:
-        break;
-    }
-    return none;
-  }
-  if (n.depth == 2) {
-    if (idx < 4) return kFaceMenu[idx];
-    return none;
-  }
-  return none;
+static void idleRow(int y, const char *label, const String &value, uint16_t color) {
+  g_disp.drawText(10, y, label, COL_DIM, 1);
+  g_disp.drawText(68, y, value.c_str(), color, 1);
 }
 
-static String menuTitle() {
-  NavState &n = nav();
-  if (n.depth == 0) return "主選單";
-  if (n.depth == 1) {
-    int p = n.cursor[0];
-    if (p >= 0 && p < kMainCount) return String(kMainMenu[p].label);
-    return "選單";
-  }
-  if (n.depth == 2) return "人臉設定";
-  if (n.depth == 3) return "刪除人臉ID";
-  return "選單";
-}
-
-static void buildFaceDeleteMenu() {
-  int n = faceCount();
-  if (n > DYN_MAX - 1) n = DYN_MAX - 1;
-  for (int i = 0; i < n; i++) {
-    String nm = faceNameAt(i);
-    snprintf(s_dynLabels[i], sizeof(s_dynLabels[i]), "%d. %s", i + 1, nm.c_str());
-    s_dynItems[i].label = s_dynLabels[i];
-    s_dynItems[i].action = ACT_FACE_DELETE_ONE;
-    s_dynItems[i].hint = "刪除";
-  }
-  s_dynItems[n].label = "返回";
-  s_dynItems[n].action = ACT_BACK;
-  s_dynItems[n].hint = "回上一層";
-  s_dynCount = n + 1;
-
-  NavState &st = nav();
-  st.dynActive = 1;
-  st.dynCount = (uint8_t)s_dynCount;
-  if (st.cursor[3] != 255 && st.cursor[3] >= s_dynCount) st.cursor[3] = 255;
-}
-
-static void menuAdvance() {
-  NavState &n = nav();
-  if (n.depth >= NAV_MAX_DEPTH) return;
-  int cnt = menuCount();
-  if (cnt <= 0) return;
-  uint8_t &c = n.cursor[n.depth];
-  if (c == 255) {
-    c = 0;
-  } else {
-    c = (uint8_t)((c + 1) % cnt);
-  }
-}
-
-// =====================================================================
-//  選單畫面
-// =====================================================================
-
-static void renderMenu() {
-  NavState &n = nav();
+static void renderIdle() {
   g_disp.clear(COL_BG);
-  drawHeader(menuTitle().c_str());
+  drawHeader("TTGO AI Camera");
 
-  int cnt = menuCount();
-  int cur = (n.depth < NAV_MAX_DEPTH) ? n.cursor[n.depth] : 255;
-  int visible = cnt > 6 ? 6 : cnt;
-
-  int first = 0;
-  if (cnt > 6 && cur != 255) {
-    first = (int)cur - 2;
-    if (first < 0) first = 0;
-    if (first > cnt - 6) first = cnt - 6;
+  String net;
+  String ip;
+  uint16_t netColor = COL_TEXT;
+  if (wifiConnected()) {
+    net = g_cfg.wifi.ssid;
+    ip = wifiIP();
+  } else if (wifiApActive()) {
+    net = "AP " + wifiApSsid();
+    ip = WiFi.softAPIP().toString();
+    netColor = COL_YELLOW;
+  } else {
+    net = "未連線";
+    ip = "-";
+    netColor = COL_RED;
   }
 
-  for (int k = 0; k < visible; k++) {
-    int i = first + k;
-    MenuItem it = menuItemAt(i);
-    int iy = 36 + k * 30;
-    bool sel = (i == (int)cur);
-    if (sel) {
-      g_disp.fillRoundRect(8, iy, 224, 26, 6, COL_PANEL2);
-      g_disp.fillRect(8, iy, 3, 26, COL_ACCENT);
-    }
-    g_disp.drawText(20, iy + 5, it.label, sel ? COL_WHITE : COL_TEXT, 1);
-    if (sel && it.hint) {
-      int w = g_disp.textWidth(it.hint, 1);
-      g_disp.drawText(226 - w, iy + 5, it.hint, COL_DIM, 1);
-    }
+  idleRow(40, "WiFi", clipText(net, 19), netColor);
+  idleRow(66, "IP", ip, COL_TEXT);
+
+  uint64_t total = 0, used = 0;
+  storageInfo(total, used);
+  String sd = storageReady() ? humanBytes(used) + " / " + humanBytes(total) : String("未掛載");
+  idleRow(92, "SD", sd, storageReady() ? COL_TEXT : COL_RED);
+
+  idleRow(118, "人臉", String(faceCount()) + " 組", COL_TEXT);
+  idleRow(144, "麥克風", g_cfg.audio.enabled ? "ON" : "OFF",
+          g_cfg.audio.enabled ? COL_GREEN : COL_DIM);
+
+  g_disp.drawTextCenter(182, ("待機中  " + uptimeText()).c_str(), COL_DIM, 1);
+
+  if (wifiConnected() || wifiApActive()) {
+    String url = "http://" + ip;
+    drawFooterHint(url.c_str());
+  } else {
+    drawFooterHint("請由網頁操作");
   }
-
-  if (cnt == 0) {
-    g_disp.drawTextCenter(100, "（沒有項目）", COL_DIM, 1);
-  }
-
-  // 頁碼
-  if (cnt > 6) {
-    char buf[24];
-    snprintf(buf, sizeof(buf), "%d/%d", (int)cur + 1, cnt);
-    g_disp.drawText(210, 7, buf, COL_DIM, 1);
-  }
-
-  drawFooterHint(g_cfg.display.auto_run
-                     ? (cur == 255 ? "按 RST 選擇下一項" : "倒數結束後自動執行")
-                     : "請由網頁前端操作");
-
   g_disp.push();
 }
 
-static void updateCountdown(uint32_t now) {
-  uint32_t total = g_cfg.display.nav_timeout_ms;
-  if (total < 400) total = 400;
-  uint32_t el = now - s_countdownStart;
-  if (el > total) el = total;
-  int w = (int)((uint64_t)el * 240ULL / total);
-  if (w == s_lastCountdownW) return;
-  s_lastCountdownW = w;
-  g_disp.fillRect(0, 236, 240, 4, COL_PANEL2);
-  g_disp.fillRect(0, 236, w, 4, COL_ACCENT);
-  g_disp.pushRect(0, 236, 240, 4);
+void appShowIdle() {
+  s_idle = true;
+  s_idleStamp = millis();
+  renderIdle();
 }
 
-void appShowMenu() {
-  nav().mode = MODE_MENU;
-  renderMenu();
-  NavState &n = nav();
-  if (!g_cfg.display.auto_run) {
-    // 本板沒有實體按鍵：不再倒數自動執行，所有動作改由網頁 / 序列埠觸發
-    s_countdownActive = false;
-    s_lastCountdownW = -1;
-    return;
-  }
-  if (!n.hold && n.depth < NAV_MAX_DEPTH && n.cursor[n.depth] != 255) {
-    s_countdownStart = millis();
-    s_countdownEnd = s_countdownStart + g_cfg.display.nav_timeout_ms;
-    s_countdownActive = true;
-    s_lastCountdownW = -1;
-    updateCountdown(s_countdownStart);
-  } else {
-    s_countdownActive = false;
-    s_lastCountdownW = -1;
-  }
-}
-
-static void returnToMenu() {
-  nav().mode = MODE_MENU;
-  nav().hold = 0;
-  menuAdvance();
-  navPersist();
-  appShowMenu();
+void appIdleTick() {
+  if (!s_idle || g_appBusy || s_pendingAction != 0) return;
+  uint32_t now = millis();
+  if ((uint32_t)(now - s_idleStamp) < 5000) return;
+  s_idleStamp = now;
+  renderIdle();
 }
 
 // =====================================================================
@@ -378,7 +175,7 @@ static void returnToMenu() {
 static void screenFrame(const char *title) {
   g_disp.clear(COL_BG);
   drawHeader(title);
-  drawFooterHint("網頁可返回主選單");
+  drawFooterHint("網頁可回到待機畫面");
 }
 
 static void screenMessage(const char *title, const char *body) {
@@ -387,12 +184,20 @@ static void screenMessage(const char *title, const char *body) {
   g_disp.push();
 }
 
+// 單次結果畫面先停留一下，讓使用者看清楚；網頁送出新動作可提前打斷。
+static void holdScreen(uint32_t ms) {
+  uint32_t start = millis();
+  while (millis() - start < ms && s_pendingAction == 0) {
+    webuiHandle();
+    delay(10);
+  }
+}
+
 static void pushAndWait(uint32_t ms) {
   g_disp.push();
   uint32_t start = millis();
   while (millis() - start < ms) {
     webuiHandle();
-    serialPoll();
     delay(10);
   }
 }
@@ -555,7 +360,6 @@ static void chatIdleLoop(const char *status) {
       drawReplyPage();
     }
     webuiHandle();
-    serialPoll();
     delay(5);
   }
 }
@@ -662,7 +466,7 @@ static void screenChat() {
   s_replyLineCount = wrapText(reply.reply, 220, s_replyLines, REPLY_LINES);
   s_replyPage = 0;
   drawReplyPage();
-  chatIdleLoop("網頁可返回主選單");
+  chatIdleLoop("網頁可回到待機畫面");
 }
 
 static void screenOrb() {
@@ -691,93 +495,7 @@ static void screenOrb() {
   s_replyLineCount = wrapText(last, 220, s_replyLines, REPLY_LINES);
   s_replyPage = 0;
   drawReplyPage();
-  chatIdleLoop("網頁可返回主選單");
-}
-
-// =====================================================================
-//  環境圖表
-// =====================================================================
-
-static void envPush(const BmeReading &r) {
-  s_envT[s_envHead] = r.temperature;
-  s_envH[s_envHead] = r.humidity;
-  s_envP[s_envHead] = r.pressure;
-  s_envHead = (s_envHead + 1) % ENV_MAX;
-  if (s_envN < ENV_MAX) s_envN++;
-}
-
-static int envIndex(int i) {
-  // i = 0 為最舊
-  int start = (s_envHead - s_envN + ENV_MAX) % ENV_MAX;
-  return (start + i) % ENV_MAX;
-}
-
-static void drawChartRow(int y, const char *label, const char *value, const char *unit,
-                         const float *data, float minV, float maxV, uint16_t color) {
-  g_disp.fillRect(8, y, 224, 54, COL_PANEL);
-  g_disp.drawText(14, y + 4, label, COL_DIM, 1);
-  g_disp.drawText(14, y + 22, value, color, 1);
-  int vw = g_disp.textWidth(value, 1);
-  g_disp.drawText(14 + vw + 4, y + 26, unit, COL_DIM, 1);
-
-  int cx0 = 78, cx1 = 226;
-  int cy0 = y + 8, cy1 = y + 46;
-  g_disp.drawHLine(cx0, cy1, cx1 - cx0, COL_PANEL2);
-  g_disp.drawHLine(cx0, (cy0 + cy1) / 2, cx1 - cx0, COL_PANEL2);
-
-  if (s_envN < 2) return;
-  int denom = s_envN > 1 ? s_envN - 1 : 1;
-  int px = -1, py = -1;
-  for (int i = 0; i < s_envN; i++) {
-    float v = data[envIndex(i)];
-    float t = (v - minV) / (maxV - minV);
-    if (t < 0) t = 0;
-    if (t > 1) t = 1;
-    int x = cx0 + (int)((float)(cx1 - cx0) * i / (float)denom);
-    int yy = cy1 - (int)((cy1 - cy0) * t);
-    if (px >= 0) g_disp.drawLine(px, py, x, yy, color);
-    px = x;
-    py = yy;
-  }
-}
-
-static void screenChart() {
-  g_disp.clear(COL_BG);
-  drawHeader("環境參數");
-  drawFooterHint("每 2 秒更新 · 網頁可返回");
-  g_disp.push();
-
-  if (!bmeEnsure()) {
-    screenMessage("環境參數", "未偵測到 BME280。\n\n請確認感測器接在 I2C（SDA 18 / SCL 23），"
-                              "或在 config.json 設定 bme280.enabled。");
-    return;
-  }
-
-  s_envN = 0;
-  s_envHead = 0;
-
-  uint32_t lastRead = 0;
-  while (s_pendingAction == 0) {
-    uint32_t now = millis();
-    if (now - lastRead >= g_cfg.bme.interval_ms) {
-      lastRead = now;
-      BmeReading r;
-      if (bmeRead(r)) {
-        envPush(r);
-        char tb[24], hb[24], pb[24];
-        snprintf(tb, sizeof(tb), "%.1f", r.temperature);
-        snprintf(hb, sizeof(hb), "%.1f", r.humidity);
-        snprintf(pb, sizeof(pb), "%.1f", r.pressure);
-        drawChartRow(36, "溫度", tb, "°C", s_envT, 0.0f, 50.0f, COL_RED);
-        drawChartRow(94, "濕度", hb, "%", s_envH, 0.0f, 100.0f, COL_CYAN);
-        drawChartRow(152, "氣壓", pb, "hPa", s_envP, 950.0f, 1050.0f, COL_GREEN);
-        g_disp.pushRect(0, 36, 240, 170);
-      }
-    }
-    webuiHandle();
-    serialPoll();
-    delay(20);
-  }
+  chatIdleLoop("網頁可回到待機畫面");
 }
 
 // =====================================================================
@@ -846,12 +564,6 @@ static void screenSysStatus() {
   y += 17;
   snprintf(buf, sizeof(buf), "%d 個", faceCount());
   g_disp.drawText(10, y, buf, COL_TEXT, 1);
-  y += 22;
-
-  g_disp.drawText(10, y, "BME280", COL_DIM, 1);
-  y += 17;
-  bool bmeOk = bmeEnsure();
-  g_disp.drawText(10, y, bmeOk ? "已連接" : "未偵測", bmeOk ? COL_GREEN : COL_RED, 1);
   y += 22;
 
   g_disp.drawText(10, y, "電池", COL_DIM, 1);
@@ -1018,7 +730,7 @@ static void screenEnroll() {
     g_disp.drawTextCenter(90, "註冊失敗", COL_RED, 1);
     g_disp.drawTextWrapped(10, 118, 220, err.c_str(), COL_TEXT, COL_BG, false, 1, 20, 4);
   }
-  drawFooterHint("網頁可返回主選單");
+  drawFooterHint("網頁可回到待機畫面");
   g_disp.push();
 }
 
@@ -1049,7 +761,7 @@ void appEnrollEnd(bool ok, const String &msg, const String &name) {
     g_disp.drawTextCenter(90, "註冊失敗", COL_RED, 1);
     g_disp.drawTextWrapped(10, 118, 220, msg.c_str(), COL_TEXT, COL_BG, false, 1, 20, 4);
   }
-  drawFooterHint("網頁可返回主選單");
+  drawFooterHint("網頁可回到待機畫面");
   g_disp.push();
 }
 
@@ -1077,7 +789,6 @@ static void screenCamStream() {
       }
     }
     webuiHandle();
-    serialPoll();
     delay(2);
   }
   (void)frames;
@@ -1123,7 +834,6 @@ static void screenRecognize() {
     frames++;
     (void)frames;
     webuiHandle();
-    serialPoll();
     delay(10);
   }
 }
@@ -1160,6 +870,7 @@ static void screenFaceList() {
 // =====================================================================
 
 static void runScreen(uint16_t action) {
+  s_idle = false;
   g_appBusy = true;
   switch (action) {
     case ACT_WIFI_INFO:
@@ -1190,9 +901,6 @@ static void runScreen(uint16_t action) {
       appClearHistory();
       screenMessage("AI聊天機器人", "已清除本機對話記錄。");
       break;
-    case ACT_BME_CHART:
-      screenChart();
-      break;
     case ACT_FACE_ENROLL:
       screenEnroll();
       break;
@@ -1220,94 +928,6 @@ static void runScreen(uint16_t action) {
       break;
   }
   g_appBusy = false;
-}
-
-static void enterSubmenu() {
-  NavState &n = nav();
-  if (n.depth + 1 < NAV_MAX_DEPTH) {
-    n.depth++;
-    n.cursor[n.depth] = 255;
-  }
-  n.hold = 1;
-  navPersist();
-  appShowMenu();
-}
-
-static void goBack() {
-  NavState &n = nav();
-  if (n.depth > 0) n.depth--;
-  if (n.depth < 3) n.dynActive = 0;
-  n.hold = 1;
-  navPersist();
-  appShowMenu();
-}
-
-static void executeCurrent() {
-  NavState &n = nav();
-  int cnt = menuCount();
-  if (cnt <= 0) {
-    n.hold = 1;
-    navPersist();
-    appShowMenu();
-    return;
-  }
-  if (n.cursor[n.depth] == 255 || n.cursor[n.depth] >= cnt) {
-    n.hold = 1;
-    navPersist();
-    appShowMenu();
-    return;
-  }
-
-  MenuItem it = menuItemAt(n.cursor[n.depth]);
-
-  if (it.action == ACT_SUBMENU) {
-    enterSubmenu();
-    return;
-  }
-  if (it.action == ACT_BACK) {
-    goBack();
-    return;
-  }
-  if (it.action == ACT_NONE) {
-    n.hold = 1;
-    navPersist();
-    appShowMenu();
-    return;
-  }
-
-  if (it.action == ACT_FACE_DELETE) {
-    buildFaceDeleteMenu();
-    n.depth = 3;
-    n.cursor[3] = 255;
-    n.hold = 1;
-    navPersist();
-    appShowMenu();
-    return;
-  }
-
-  if (it.action == ACT_FACE_DELETE_ONE) {
-    int idx = n.cursor[3];
-    String nm = faceNameAt(idx);
-    bool ok = faceRemoveAt(idx);
-    n.depth = 2;
-    n.cursor[2] = 255;
-    n.dynActive = 0;
-    n.hold = 1;
-    navPersist();
-
-    screenFrame("刪除人臉ID");
-    if (ok) {
-      g_disp.drawTextCenter(90, "已刪除", COL_GREEN, 1);
-      g_disp.drawTextCenter(116, nm.c_str(), COL_TEXT, 1);
-    } else {
-      g_disp.drawTextCenter(90, "刪除失敗", COL_RED, 1);
-    }
-    g_disp.push();
-    return;
-  }
-
-  runScreen(it.action);
-  returnToMenu();
 }
 
 // =====================================================================
@@ -1352,7 +972,7 @@ String appStatusJson() {
   storageInfo(total, used);
 
   String s;
-  s.reserve(640);
+  s.reserve(768);
   s += "{\"wifi\":{\"ssid\":\"" + jsonEscape(g_cfg.wifi.ssid) + "\",\"ip\":\"" +
        jsonEscape(wifiConnected() ? wifiIP() : String()) + "\",\"state\":\"" +
        jsonEscape(wifiStatusText()) + "\",\"rssi\":" + String(wifiConnected() ? wifiRSSI() : 0) +
@@ -1366,12 +986,14 @@ String appStatusJson() {
        (g_font.ok() ? "true" : "false") + "},";
 
   s += "\"faces\":" + String(faceCount());
-  s += ",\"bme\":" + String(bmeEnsure() ? "true" : "false");
+  s += ",\"cam\":{\"ready\":" + String(camReady() ? "true" : "false") +
+       ",\"fps\":" + String((unsigned)camFps()) +
+       ",\"bytes\":" + String((unsigned)camLastFrameBytes()) +
+       ",\"errors\":" + String((unsigned)camErrorCount()) + "}";
   s += ",\"power\":\"" + jsonEscape(powerText()) + "\"";
   s += ",\"ai\":" + String(geminiReady() ? "true" : "false");
   s += ",\"model\":\"" + jsonEscape(g_cfg.ai.model) + "\"";
-  s += ",\"nav\":{\"mode\":" + String((int)nav().mode) + ",\"depth\":" +
-       String((int)nav().depth) + "}";
+  s += ",\"screen\":\"" + String(s_idle ? "idle" : "active") + "\"";
   s += "}";
   return s;
 }
@@ -1465,9 +1087,6 @@ void setup() {
   Serial.println(" TTGO T-Camera Plus - AI Camera");
   Serial.println("=================================");
 
-  bool warm = navWarmBoot();
-  NavState &n = nav();
-
   storageBegin();
   g_cfg.load();
 
@@ -1491,75 +1110,38 @@ void setup() {
   bootSplash();
   delay(500);
 
-  bmeBegin();
+  powerBegin();
   faceLoad();
 
   wifiBegin();
   webuiBegin();
-  serialBegin();
 
-  // 導覽狀態
-  if (warm) {
-    if (n.mode != MODE_MENU) {
-      // 從子畫面按 RST：回選單並前進一格
-      n.mode = MODE_MENU;
-      n.hold = 0;
-      menuAdvance();
-    } else if (n.hold) {
-      // 剛進入子選單 / 剛返回：游標不動，直接倒數
-      n.hold = 0;
-    } else {
-      menuAdvance();
-    }
-    if (n.depth < NAV_MAX_DEPTH && n.cursor[n.depth] == 255) n.cursor[n.depth] = 0;
-  } else {
-    n.mode = MODE_MENU;
-    n.depth = 0;
-    for (int i = 0; i < NAV_MAX_DEPTH; i++) n.cursor[i] = 255;
-    n.dynActive = 0;
-    n.dynCount = 0;
-    n.hold = 1;
-    Serial.println("[NAV] 冷開機，等待第一次 RST");
-  }
-
-  if (n.depth == 3) buildFaceDeleteMenu();
-  navPersist();
-
-  appShowMenu();
-  Serial.println("[NAV] 選單已顯示");
+  appShowIdle();
+  Serial.println("[LCD] 待機畫面已顯示（所有操作請由網頁進行）");
 }
 
 void loop() {
-  serialPoll();
   webuiHandle();
   wifiLoop();
-
-  if (s_countdownActive) {
-    uint32_t now = millis();
-    if ((int32_t)(now - s_countdownEnd) >= 0) {
-      s_countdownActive = false;
-      executeCurrent();
-    } else {
-      updateCountdown(now);
-    }
-  }
 
   if (s_pendingAction != 0 && !g_appBusy) {
     uint16_t action = s_pendingAction;
     s_pendingAction = 0;
-    if (action == ACT_FACE_DELETE) {
-      buildFaceDeleteMenu();
-      nav().depth = 3;
-      nav().cursor[3] = 255;
-      nav().hold = 1;
-      navPersist();
-      appShowMenu();
+    if (action == ACT_BACK) {
+      appShowIdle();
     } else {
       runScreen(action);
-      nav().hold = 1;
-      navPersist();
-      appShowMenu();
+      if (s_pendingAction == 0) {
+        // 會自己持續更新的畫面已用 pending 離開，不必再等；其餘結果畫面停留 4 秒。
+        if (action != ACT_CAM_STREAM && action != ACT_AI_CHAT && action != ACT_AI_ORB &&
+            action != ACT_FACE_RECOGNIZE) {
+          holdScreen(4000);
+        }
+        if (s_pendingAction == 0) appShowIdle();
+      }
     }
+  } else {
+    appIdleTick();
   }
 
   delay(5);

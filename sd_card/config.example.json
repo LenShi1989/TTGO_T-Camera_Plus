@@ -23,11 +23,6 @@
     "vad_threshold": 700,
     "gain": 1
   },
-  "bme280": {
-    "enabled": true,
-    "address": 118,
-    "interval_ms": 2000
-  },
   "camera": {
     "xclk_hz": 20000000,
     "framesize": 5,
@@ -39,9 +34,7 @@
     "hmirror": 0
   },
   "display": {
-    "brightness": 255,
-    "nav_timeout_ms": 2500,
-    "auto_run": false
+    "brightness": 255
   },
   "web": {
     "enabled": true,

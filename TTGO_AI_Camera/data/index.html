@@ -19,12 +19,11 @@
     <button data-view="sd"><i>▣</i>SD 卡設定</button>
     <button data-view="wifi"><i>⌁</i>WiFi 設定</button>
     <button data-view="ai"><i>◉</i>AI 聊天機器人</button>
-    <button data-view="env"><i>◢</i>BME280 環境</button>
     <button data-view="cam"><i>▢</i>CAMERA</button>
   </nav>
   <div class="side-foot">
     <div id="ipFoot">—</div>
-    <button class="btn ghost" id="btnMenu">TFT 顯示主選單</button>
+    <button class="btn ghost" id="btnMenu">TFT 回到待機畫面</button>
   </div>
 </aside>
 <main>
@@ -44,8 +43,9 @@
     <div class="card">
       <h2>裝置操作</h2>
       <div class="row">
+        <button class="btn" id="btnBright">TFT 亮度</button>
         <button class="btn danger" id="btnReboot">重新開機</button>
-        <span class="muted">本板沒有實體按鍵，所有操作都由這個網頁送出。</span>
+        <span class="muted">本板沒有實體按鍵，所有操作都由這個網頁送出；TFT 平常只顯示待機儀表板。</span>
       </div>
     </div>
   </section>
@@ -126,15 +126,6 @@
     </div>
   </section>
 
-  <section id="view-env" class="view">
-    <h1>BME280 環境參數 <small>溫度 / 濕度 / 氣壓 折線圖</small></h1>
-    <div class="grid" id="envGrid"></div>
-    <div class="card"><h2>溫度 °C</h2><canvas id="cT"></canvas></div>
-    <div class="card"><h2>濕度 %</h2><canvas id="cH"></canvas></div>
-    <div class="card"><h2>大氣壓力 hPa</h2><canvas id="cP"></canvas></div>
-    <div class="muted">每 2 秒更新，保留最近 120 筆。</div>
-  </section>
-
   <section id="view-cam" class="view">
     <h1>CAMERA <small>串流影像 · 人臉辨識綠框 / 紅框</small></h1>
     <div class="card">
@@ -151,6 +142,7 @@
         <button class="btn ghost" id="camSnap">下載截圖</button>
       </div>
       <div class="muted" id="camState">閒置</div>
+      <div class="muted">影像失敗會自動重試；序列埠的 <code>[CAM]</code> 訊息可看到失敗原因與 fps。</div>
     </div>
     <div class="card">
       <h2>人臉設定</h2>

@@ -17,7 +17,6 @@ void AppConfig::resetDefaults() {
   ai = AiCfg();
   ai.system_prompt = kDefaultPrompt;
   audio = AudioCfg();
-  bme = BmeCfg();
   camera = CameraCfg();
   display = DisplayCfg();
   web = WebCfg();
@@ -90,15 +89,6 @@ bool AppConfig::fromJson(const String &json, String *err) {
     readBool(au["enabled"], audio.enabled);
   }
 
-  JsonObjectConst b = doc["bme280"];
-  if (!b.isNull()) {
-    readBool(b["enabled"], bme.enabled);
-    int addr = bme.address;
-    readInt(b["address"], addr);
-    bme.address = (uint8_t)addr;
-    readU32(b["interval_ms"], bme.interval_ms);
-  }
-
   JsonObjectConst c = doc["camera"];
   if (!c.isNull()) {
     readInt(c["xclk_hz"], camera.xclk_hz);
@@ -114,8 +104,6 @@ bool AppConfig::fromJson(const String &json, String *err) {
   JsonObjectConst d = doc["display"];
   if (!d.isNull()) {
     readInt(d["brightness"], display.brightness);
-    readU32(d["nav_timeout_ms"], display.nav_timeout_ms);
-    readBool(d["auto_run"], display.auto_run);
   }
 
   JsonObjectConst wb = doc["web"];
@@ -134,16 +122,12 @@ bool AppConfig::fromJson(const String &json, String *err) {
   if (audio.gain > 8) audio.gain = 8;
   if (display.brightness < 0) display.brightness = 0;
   if (display.brightness > 255) display.brightness = 255;
-  if (display.nav_timeout_ms < 800) display.nav_timeout_ms = 800;
-  if (display.nav_timeout_ms > 20000) display.nav_timeout_ms = 20000;
   if (camera.enroll_samples < 1) camera.enroll_samples = 1;
   if (camera.enroll_samples > 10) camera.enroll_samples = 10;
   if (camera.max_faces < 1) camera.max_faces = 1;
   if (camera.max_faces > 16) camera.max_faces = 16;
   if (camera.rec_threshold < 0.1f) camera.rec_threshold = 0.1f;
   if (camera.rec_threshold > 0.99f) camera.rec_threshold = 0.99f;
-  if (bme.interval_ms < 500) bme.interval_ms = 500;
-  if (bme.interval_ms > 60000) bme.interval_ms = 60000;
   if (ai.max_output_tokens < 32) ai.max_output_tokens = 32;
   if (ai.max_output_tokens > 2048) ai.max_output_tokens = 2048;
   if (ai.system_prompt.isEmpty()) ai.system_prompt = kDefaultPrompt;
@@ -178,11 +162,6 @@ String AppConfig::toJson(bool maskSecrets) const {
   au["gain"] = audio.gain;
   au["enabled"] = audio.enabled;
 
-  JsonObject b = doc["bme280"].to<JsonObject>();
-  b["enabled"] = bme.enabled;
-  b["address"] = bme.address;
-  b["interval_ms"] = bme.interval_ms;
-
   JsonObject c = doc["camera"].to<JsonObject>();
   c["xclk_hz"] = camera.xclk_hz;
   c["framesize"] = camera.framesize;
@@ -195,8 +174,6 @@ String AppConfig::toJson(bool maskSecrets) const {
 
   JsonObject d = doc["display"].to<JsonObject>();
   d["brightness"] = display.brightness;
-  d["nav_timeout_ms"] = display.nav_timeout_ms;
-  d["auto_run"] = display.auto_run;
 
   JsonObject wb = doc["web"].to<JsonObject>();
   wb["enabled"] = web.enabled;

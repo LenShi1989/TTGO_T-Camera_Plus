@@ -12,9 +12,9 @@
 #include "app.h"
 #include "app_config.h"
 #include "audio.h"
-#include "bme280.h"
 #include "camera_face.h"
 #include "gemini.h"
+#include "img_converters.h"
 #include "power.h"
 #include "storage.h"
 #include "util.h"
@@ -468,7 +468,7 @@ static void voiceUploadData() {
 static void handleVoice() {
   if (!checkAuth()) return;
   if (!appCanRunAction()) {
-    sendJson(409, errJson("裝置忙碌中，請先回到主選單再試"));
+    sendJson(409, errJson("裝置忙碌中，請先按「TFT 回到待機畫面」再試"));
     return;
   }
   if (!geminiReady()) {
@@ -638,16 +638,42 @@ static void handleMicRecord() {
 static void handleCamFrame() {
   if (!checkAuth()) return;
   if (!camBegin()) {
-    server.send(500, "text/plain; charset=utf-8", "相機初始化失敗");
+    server.sendHeader("X-Cam-Error", "init");
+    server.send(503, "text/plain; charset=utf-8", "相機初始化失敗，5 秒後會自動重試");
     return;
   }
+
+  // 零複製：直接把相機的 JPEG 緩衝區送出去，送完才歸還。
+  // 舊版每張都 ps_malloc + memcpy，6~7 fps 下會造成堆積體破碎與不必要的延遲。
+  camera_fb_t *fb = camGrabFrame();
+  if (!fb) {
+    server.sendHeader("X-Cam-Error", "grab");
+    server.send(503, "text/plain; charset=utf-8", "擷取失敗，請稍後重試");
+    return;
+  }
+
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("X-Cam-Bytes", String((unsigned)fb->len));
+  server.sendHeader("X-Cam-Fps", String((unsigned)camFps()));
+  server.sendHeader("X-Free-Heap", String((unsigned)(ESP.getFreeHeap() / 1024)));
+
+  if (fb->format == PIXFORMAT_JPEG) {
+    server.send_P(200, "image/jpeg", (const char *)fb->buf, fb->len);
+    camReturnFrame(fb);
+    return;
+  }
+
   uint8_t *jpg = nullptr;
   size_t len = 0;
-  if (!camSnapshotJpeg(&jpg, &len) || !jpg) {
-    server.send(500, "text/plain; charset=utf-8", "擷取失敗");
+  bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height, fb->format,
+                    (uint8_t)g_cfg.camera.jpeg_quality, &jpg, &len);
+  camReturnFrame(fb);
+  if (!ok || !jpg) {
+    server.sendHeader("X-Cam-Error", "encode");
+    server.send(503, "text/plain; charset=utf-8", "JPEG 轉檔失敗");
     return;
   }
-  server.sendHeader("Cache-Control", "no-store");
   server.send_P(200, "image/jpeg", (const char *)jpg, len);
   free(jpg);
 }
@@ -655,9 +681,21 @@ static void handleCamFrame() {
 static void handleCamFace() {
   if (!checkAuth()) return;
   if (!camBegin()) {
-    sendJson(500, errJson("相機初始化失敗"));
+    sendJson(503, errJson("相機初始化失敗，5 秒後會自動重試"));
     return;
   }
+
+  // 人臉偵測會佔住相機數百毫秒；同一結果在 900 ms 內重複使用，
+  // 避免前端輪詢把即時影像的 fps 拉下來。
+  static uint32_t s_faceStamp = 0;
+  static bool s_faceValid = false;
+  static String s_faceJson;
+  uint32_t now = millis();
+  if (!server.hasArg("fresh") && s_faceValid && (uint32_t)(now - s_faceStamp) < 900) {
+    sendJson(200, s_faceJson);
+    return;
+  }
+
   bool recognize = server.arg("recognize") != "0";
   FaceResult r;
   faceDetect(r, recognize, false);
@@ -675,6 +713,9 @@ static void handleCamFace() {
   s += ",\"box\":[" + String(r.x) + "," + String(r.y) + "," + String(r.w) + "," +
        String(r.h) + "]";
   s += ",\"crop\":240}";
+  s_faceJson = s;
+  s_faceStamp = millis();
+  s_faceValid = true;
   sendJson(200, s);
 }
 
@@ -683,24 +724,6 @@ static void handleCamFace() {
 static void handleStatus() {
   if (!checkAuth()) return;
   sendJson(200, appStatusJson());
-}
-
-static void handleSensors() {
-  if (!checkAuth()) return;
-  BmeReading r;
-  bool ok = bmeRead(r);
-  String s = "{\"ok\":";
-  s += ok ? "true" : "false";
-  if (ok) {
-    s += ",\"t\":";
-    s += String(r.temperature, 2);
-    s += ",\"h\":";
-    s += String(r.humidity, 2);
-    s += ",\"p\":";
-    s += String(r.pressure, 2);
-  }
-  s += "}";
-  sendJson(200, s);
 }
 
 static void handleHistory() {
@@ -716,7 +739,7 @@ static void handleHistory() {
 static void handleChat() {
   if (!checkAuth()) return;
   if (!appCanRunAction()) {
-    sendJson(409, errJson("裝置忙碌中，請先回到主選單再試"));
+    sendJson(409, errJson("裝置忙碌中，請先按「TFT 回到待機畫面」再試"));
     return;
   }
   String text = server.arg("plain");
@@ -946,7 +969,6 @@ void webuiBegin() {
   }
 
   server.on("/api/status", HTTP_GET, handleStatus);
-  server.on("/api/sensors", HTTP_GET, handleSensors);
   server.on("/api/history", HTTP_GET, handleHistory);
   server.on("/api/history", HTTP_DELETE, handleHistory);
   server.on("/api/chat", HTTP_POST, handleChat);

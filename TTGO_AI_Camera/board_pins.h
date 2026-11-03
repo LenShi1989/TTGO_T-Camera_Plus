@@ -19,7 +19,7 @@
 // ---------- microSD ----------
 #define PIN_SD_CS 0
 
-// ---------- I2C (BME280 / IP5306) ----------
+// ---------- I2C (IP5306 電源管理) ----------
 #define PIN_I2C_SDA 18
 #define PIN_I2C_SCL 23
 #define I2C_BUS_NUM 1 // Wire1，相機 SCCB 使用 I2C0

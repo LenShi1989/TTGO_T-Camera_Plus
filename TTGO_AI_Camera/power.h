@@ -8,5 +8,6 @@ struct PowerInfo {
   bool full = false;
 };
 
+void powerBegin(); // 初始化 I2C1（SDA 18 / SCL 23）
 bool powerRead(PowerInfo &out);
 String powerText();
