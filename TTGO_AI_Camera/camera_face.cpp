@@ -48,9 +48,20 @@ static bool s_rgbFresh = false; // s_rgb 內是否為目前這張影格的解碼
 
 // ---------------------------------------------------------------- 相機
 
-bool camBegin() {
-  if (s_camReady) return true;
+// 相機固定在 core 0：由一個專屬任務持續取樣，core 1 的網頁與 TFT 只「借」影格。
+// s_readySem = 有新影格可取；s_freeSem = 上一張已歸還、可以再取一張。
+// 兩個 semaphore 合起來就是一個單格信箱，影格本身不做任何複製。
+static SemaphoreHandle_t s_readySem = nullptr;
+static SemaphoreHandle_t s_freeSem = nullptr;
+static camera_fb_t *volatile s_slot = nullptr;
+static TaskHandle_t s_camTask = nullptr;
+static volatile bool s_camStop = false;
 
+static void camTaskFn(void *arg);
+static camera_fb_t *grabFrame();
+
+// 只做硬體初始化；core 0 的任務與 core 1 的 camBegin() 都會呼叫。
+static bool camHwInit() {
   // 初始化失敗後先冷卻 5 秒，避免每個 HTTP 請求都卡在 1~2 秒的重試上。
   uint32_t now = millis();
   if (s_nextInitTry && (int32_t)(now - s_nextInitTry) < 0) return false;
@@ -120,9 +131,65 @@ bool camBegin() {
   s_fpsFrames = 0;
   s_fpsStamp = millis();
   s_lastBytes = 0;
-  logLine("CAM", "OV2640 就緒：JPEG %ux%u q=%d fb=%u", resolution[fs].width,
+  logLine("CAM", "OV2640 就緒：JPEG %ux%u q=%d fb=%u（core 0 取樣）", resolution[fs].width,
           resolution[fs].height, quality, (unsigned)cfg.fb_count);
   return true;
+}
+
+static void camHwDeinit() {
+  if (!s_camReady) return;
+  esp_camera_deinit();
+  s_camReady = false;
+  s_fps = 0;
+  s_fpsFrames = 0;
+}
+
+bool camBegin() {
+  if (s_camReady && s_camTask) return true;
+  // 任務還在、但相機正在自癒：不要在 core 1 同時再 init 一次。
+  if (s_camTask && !s_camReady) return false;
+  if (!s_camReady && !camHwInit()) return false;
+  if (s_camTask) return true;
+
+  if (!s_readySem) s_readySem = xSemaphoreCreateBinary();
+  if (!s_freeSem) s_freeSem = xSemaphoreCreateBinary();
+  if (!s_readySem || !s_freeSem) {
+    logLine("CAM", "無法建立影格信箱（記憶體不足）");
+    return false;
+  }
+  xSemaphoreGive(s_freeSem);
+  s_camStop = false;
+
+  BaseType_t ok =
+      xTaskCreatePinnedToCore(camTaskFn, "camera", 4096, nullptr, 2, &s_camTask, 0);
+  if (ok != pdPASS) {
+    s_camTask = nullptr;
+    logLine("CAM", "無法建立相機任務");
+    return false;
+  }
+  logLine("CAM", "相機任務已啟動（core 0），影格交給 core 1 的網頁 / TFT");
+  return true;
+}
+
+// core 0：有消費者歸還影格才取下一張，所以閒置時完全不吃 CPU。
+static void camTaskFn(void *arg) {
+  (void)arg;
+  for (;;) {
+    if (s_camStop) break;
+    if (xSemaphoreTake(s_freeSem, pdMS_TO_TICKS(200)) != pdTRUE) continue;
+
+    camera_fb_t *fb = grabFrame();
+    if (!fb) {
+      xSemaphoreGive(s_freeSem);
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    s_slot = fb;
+    xSemaphoreGive(s_readySem);
+  }
+  s_slot = nullptr;
+  s_camTask = nullptr;
+  vTaskDelete(nullptr);
 }
 
 // 取一張影格；失敗時重新初始化相機再試一次（供電不穩或相機卡住時可自癒）。
@@ -147,9 +214,9 @@ static camera_fb_t *grabFrame() {
   s_lastReinit = now;
   s_reinitCount++;
 
-  logLine("CAM", "重新初始化相機（第 %u 次）", (unsigned)s_reinitCount);
-  camEnd();
-  if (!camBegin()) return nullptr;
+  logLine("CAM", "重新初始化相機（第 %u 次，core 0）", (unsigned)s_reinitCount);
+  camHwDeinit();
+  if (!camHwInit()) return nullptr;
   fb = esp_camera_fb_get();
   if (!fb) s_grabErrors++;
   return fb;
@@ -161,12 +228,23 @@ uint32_t camFps() { return s_fps; }
 uint32_t camLastFrameBytes() { return s_lastBytes; }
 uint32_t camErrorCount() { return s_grabErrors; }
 
+// 停掉 core 0 的任務後才釋放驅動，避免 deinit 與取樣同時發生。
 void camEnd() {
-  if (!s_camReady) return;
-  esp_camera_deinit();
-  s_camReady = false;
-  s_fps = 0;
-  s_fpsFrames = 0;
+  if (s_camTask) {
+    s_camStop = true;
+    if (s_freeSem) xSemaphoreGive(s_freeSem);
+    for (int i = 0; i < 300 && s_camTask; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (s_camTask) {
+      logLine("CAM", "相機任務未在時限內結束，跳過 deinit");
+      return;
+    }
+  }
+  if (s_slot) {
+    esp_camera_fb_return(s_slot);
+    s_slot = nullptr;
+  }
+  if (s_readySem) xSemaphoreTake(s_readySem, 0);
+  camHwDeinit();
 }
 
 static bool ensureRgbBuffer(int w, int h) {
@@ -225,9 +303,16 @@ static bool displayFrame(camera_fb_t *fb, bool decoded) {
   return true;
 }
 
-camera_fb_t *camGrabFrame() {
-  camera_fb_t *fb = grabFrame();
-  if (!fb) return nullptr;
+camera_fb_t *camGrabFrame(uint32_t timeoutMs) {
+  if (!s_readySem) return nullptr;
+  if (xSemaphoreTake(s_readySem, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) return nullptr;
+
+  camera_fb_t *fb = s_slot;
+  if (!fb) {
+    // 不該發生；把信箱還回去以免卡死。
+    if (s_freeSem) xSemaphoreGive(s_freeSem);
+    return nullptr;
+  }
 
   uint32_t now = millis();
   s_lastBytes = fb->len;
@@ -246,11 +331,14 @@ camera_fb_t *camGrabFrame() {
 }
 
 void camReturnFrame(camera_fb_t *fb) {
-  if (fb) esp_camera_fb_return(fb);
+  if (!fb) return;
+  esp_camera_fb_return(fb);
+  s_slot = nullptr;
+  if (s_freeSem) xSemaphoreGive(s_freeSem);
 }
 
 bool camPreviewToDisplay() {
-  camera_fb_t *fb = camGrabFrame();
+  camera_fb_t *fb = camGrabFrame(400);
   if (!fb) return false;
   bool ok = displayFrame(fb, false);
   camReturnFrame(fb);
@@ -497,7 +585,7 @@ static box_array_t *detectOnFrame(camera_fb_t **fbOut, dl_matrix3du_t &img) {
   *fbOut = nullptr;
   if (!s_camReady) return nullptr;
 
-  camera_fb_t *fb = esp_camera_fb_get();
+  camera_fb_t *fb = camGrabFrame(1200);
   if (!fb) return nullptr;
   *fbOut = fb;
 
@@ -582,7 +670,7 @@ bool faceDetect(FaceResult &res, bool doRecognize, bool drawBox) {
   }
 
   freeBoxes(boxes);
-  if (fb) esp_camera_fb_return(fb);
+  if (fb) camReturnFrame(fb);
 
   if (drawBox) {
     if (res.detected) {
@@ -665,7 +753,7 @@ bool faceEnroll(const String &rawName, EnrollProgressFn cb, String &err) {
     if (cb) cb(got, need, faceFound, bx, by, bw, bh);
 
     freeBoxes(boxes);
-    if (fb) esp_camera_fb_return(fb);
+    if (fb) camReturnFrame(fb);
     delay(60);
   }
 

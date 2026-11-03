@@ -12,8 +12,13 @@ struct WifiCfg {
   String ap_password = "12345678";
 };
 
+// 預設端點；{model} 與 {key} 會在送出前替換，可改成自架 / 代理的相容服務。
+#define AI_DEFAULT_URL \
+  "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+
 struct AiCfg {
   String api_key;
+  String api_url = AI_DEFAULT_URL;
   String model = "gemini-2.0-flash";
   String system_prompt;
   uint32_t timeout_ms = 45000;

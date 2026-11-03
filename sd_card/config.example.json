@@ -8,6 +8,7 @@
   },
   "ai": {
     "api_key": "",
+    "api_url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
     "model": "gemini-2.0-flash",
     "system_prompt": "你是一個親切的繁體中文語音助理，名字叫「小 T」。請一律使用台灣繁體中文（正體中文）回答，語氣自然、簡潔、有禮貌。每次回覆不超過 120 個字，不要使用簡體字，也不要使用表情符號。",
     "timeout_ms": 45000,

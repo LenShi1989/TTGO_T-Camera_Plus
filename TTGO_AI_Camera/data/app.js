@@ -461,12 +461,13 @@ async function loadAiConfig() {
   try {
     const c = await api('/api/config');
     const ai = (c && c.ai) || {};
+    $('#aiUrl').value = ai.api_url || '';
     $('#aiKey').value = ai.api_key || '';
     $('#aiModel').value = ai.model || '';
     $('#aiPrompt').value = ai.system_prompt || '';
     $('#aiNote').textContent = ai.api_key
-      ? '金鑰已設定；欄位顯示 *** 表示不變更。'
-      : '尚未設定 Gemini API Key，請填入後儲存。';
+      ? '金鑰已設定；欄位顯示 *** 表示不變更。API 網址可指向自架或代理的相容服務。'
+      : '尚未設定 API Key，請填入後儲存。';
   } catch (e) {
     $('#aiNote').textContent = '讀取 AI 設定失敗：' + e.message;
   }
@@ -480,6 +481,7 @@ $('#aiSave').onclick = async () => {
   try {
     const body = JSON.stringify({
       ai: {
+        api_url: $('#aiUrl').value.trim(),
         api_key: $('#aiKey').value.trim(),
         model: $('#aiModel').value.trim() || 'gemini-2.0-flash',
         system_prompt: $('#aiPrompt').value.trim()

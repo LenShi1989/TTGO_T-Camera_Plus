@@ -1,13 +1,12 @@
 #include "gemini.h"
 
 #include <ArduinoJson.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
 #include "app_config.h"
 #include "util.h"
 #include "wifi_manager.h"
-
-static const char *kHost = "generativelanguage.googleapis.com";
 
 static const char *kAudioInstruction =
     "請先仔細聽這段錄音，辨識出使用者說的內容（可能是台灣中文或英文），"
@@ -15,11 +14,86 @@ static const char *kAudioInstruction =
     "不要使用程式碼圍籬：\n"
     "{\"user\":\"辨識到的文字\",\"reply\":\"你的回答\"}";
 
-bool geminiReady() { return !g_cfg.ai.api_key.isEmpty(); }
+bool geminiReady() {
+  return !g_cfg.ai.api_key.isEmpty() && !g_cfg.ai.api_url.isEmpty();
+}
+
+// ---------------------------------------------------------------- 端點設定
+
+// ai.api_url 可自訂供應商，支援 {model} 與 {key} 兩個佔位符。預設：
+//   https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}
+// 只替換網址，請求與回應仍是 Gemini generateContent 的 JSON 格式，
+// 所以也可以指向自架或代理的 Gemini 相容服務。
+struct AiEndpoint {
+  bool tls;
+  String host;
+  uint16_t port;
+  String path;
+};
+
+static bool buildEndpoint(AiEndpoint &ep, String &err) {
+  String url = g_cfg.ai.api_url;
+  url.trim();
+  if (url.isEmpty()) {
+    err = "尚未設定 API 網址（config.json 的 ai.api_url）";
+    return false;
+  }
+  url.replace("{model}", g_cfg.ai.model);
+  url.replace("{key}", g_cfg.ai.api_key);
+  url.replace("{MODEL}", g_cfg.ai.model);
+  url.replace("{KEY}", g_cfg.ai.api_key);
+
+  int sep = url.indexOf("://");
+  if (sep <= 0) {
+    err = "ai.api_url 必須以 http:// 或 https:// 開頭";
+    return false;
+  }
+  String scheme = url.substring(0, sep);
+  scheme.toLowerCase();
+  if (scheme == "https") {
+    ep.tls = true;
+    ep.port = 443;
+  } else if (scheme == "http") {
+    ep.tls = false;
+    ep.port = 80;
+  } else {
+    err = "ai.api_url 只支援 http:// 或 https://";
+    return false;
+  }
+
+  String rest = url.substring(sep + 3);
+  int cut = rest.indexOf('/');
+  int q = rest.indexOf('?');
+  if (q >= 0 && (cut < 0 || q < cut)) cut = q;
+  String hostPort = cut < 0 ? rest : rest.substring(0, cut);
+  if (cut < 0) {
+    ep.path = "/";
+  } else if (rest[cut] == '?') {
+    ep.path = "/" + rest.substring(cut);
+  } else {
+    ep.path = rest.substring(cut);
+  }
+
+  int colon = hostPort.lastIndexOf(':');
+  if (colon > 0) {
+    long pv = hostPort.substring(colon + 1).toInt();
+    if (pv > 0 && pv < 65536) {
+      ep.port = (uint16_t)pv;
+      hostPort = hostPort.substring(0, colon);
+    }
+  }
+  ep.host = hostPort;
+  if (ep.host.isEmpty()) {
+    err = "ai.api_url 缺少主機名稱";
+    return false;
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------- HTTP
 
-static int readByte(WiFiClientSecure &c, uint32_t deadline) {
+template <typename C>
+static int readByte(C &c, uint32_t deadline) {
   while ((int32_t)(millis() - deadline) < 0) {
     int v = c.read();
     if (v >= 0) return v;
@@ -29,7 +103,8 @@ static int readByte(WiFiClientSecure &c, uint32_t deadline) {
   return -1;
 }
 
-static String readLine(WiFiClientSecure &c, uint32_t deadline) {
+template <typename C>
+static String readLine(C &c, uint32_t deadline) {
   String line;
   while (line.length() < 512) {
     int v = readByte(c, deadline);
@@ -40,7 +115,8 @@ static String readLine(WiFiClientSecure &c, uint32_t deadline) {
   return line;
 }
 
-static bool writeAll(WiFiClientSecure &c, const uint8_t *data, size_t len) {
+template <typename C>
+static bool writeAll(C &c, const uint8_t *data, size_t len) {
   size_t sent = 0;
   uint32_t deadline = millis() + 20000;
   while (sent < len) {
@@ -55,28 +131,9 @@ static bool writeAll(WiFiClientSecure &c, const uint8_t *data, size_t len) {
   return true;
 }
 
-static bool httpPostJson(const String &path, const uint8_t *body, size_t bodyLen, String &resp,
-                         int &status, String &err) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setHandshakeTimeout(20);
-
-  if (!client.connect(kHost, 443, 20000)) {
-    err = "無法連線到 Gemini（請檢查網路）";
-    return false;
-  }
-
-  String head;
-  head.reserve(256);
-  head += "POST ";
-  head += path;
-  head += " HTTP/1.1\r\nHost: ";
-  head += kHost;
-  head += "\r\nUser-Agent: TTGO-AI-Camera/1.0\r\nContent-Type: application/json\r\n";
-  head += "Content-Length: ";
-  head += String((unsigned)bodyLen);
-  head += "\r\nConnection: close\r\n\r\n";
-
+template <typename C>
+static bool httpExchange(C &client, const String &head, const uint8_t *body, size_t bodyLen,
+                         String &resp, int &status, String &err) {
   if (!writeAll(client, (const uint8_t *)head.c_str(), head.length())) {
     err = "請求送出失敗（標頭）";
     client.stop();
@@ -147,6 +204,38 @@ static bool httpPostJson(const String &path, const uint8_t *body, size_t bodyLen
 
   client.stop();
   return true;
+}
+
+static bool httpPostJson(const AiEndpoint &ep, const uint8_t *body, size_t bodyLen, String &resp,
+                         int &status, String &err) {
+  String head;
+  head.reserve(320);
+  head += "POST ";
+  head += ep.path;
+  head += " HTTP/1.1\r\nHost: ";
+  head += ep.host;
+  head += "\r\nUser-Agent: TTGO-AI-Camera/1.0\r\nContent-Type: application/json\r\n";
+  head += "Accept: application/json\r\nContent-Length: ";
+  head += String((unsigned)bodyLen);
+  head += "\r\nConnection: close\r\n\r\n";
+
+  if (ep.tls) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setHandshakeTimeout(20);
+    if (!client.connect(ep.host.c_str(), ep.port, 20000)) {
+      err = String("無法連線到 ") + ep.host;
+      return false;
+    }
+    return httpExchange(client, head, body, bodyLen, resp, status, err);
+  }
+
+  WiFiClient client;
+  if (!client.connect(ep.host.c_str(), ep.port, 20000)) {
+    err = String("無法連線到 ") + ep.host;
+    return false;
+  }
+  return httpExchange(client, head, body, bodyLen, resp, status, err);
 }
 
 // ---------------------------------------------------------------- 回應解析
@@ -228,14 +317,6 @@ static bool parseApiResponse(const String &resp, int status, AiReply &out) {
   return out.ok;
 }
 
-static String buildPath() {
-  String path = "/v1beta/models/";
-  path += g_cfg.ai.model;
-  path += ":generateContent?key=";
-  path += g_cfg.ai.api_key;
-  return path;
-}
-
 static void appendGenerationConfig(String &s) {
   s += ",\"generationConfig\":{\"temperature\":";
   s += String(g_cfg.ai.temperature, 2);
@@ -249,7 +330,7 @@ static void appendGenerationConfig(String &s) {
 bool geminiChatText(const String &text, AiReply &out) {
   out = AiReply();
   if (!geminiReady()) {
-    out.error = "尚未設定 Gemini API Key（config.json 的 ai.api_key）";
+    out.error = "尚未設定 API Key（config.json 的 ai.api_key）";
     return false;
   }
   if (!wifiConnected()) {
@@ -267,9 +348,14 @@ bool geminiChatText(const String &text, AiReply &out) {
   appendGenerationConfig(body);
   body += "}";
 
+  AiEndpoint ep;
   String resp, err;
   int status = 0;
-  if (!httpPostJson(buildPath(), (const uint8_t *)body.c_str(), body.length(), resp, status, err)) {
+  if (!buildEndpoint(ep, err)) {
+    out.error = err;
+    return false;
+  }
+  if (!httpPostJson(ep, (const uint8_t *)body.c_str(), body.length(), resp, status, err)) {
     out.error = err;
     return false;
   }
@@ -280,7 +366,7 @@ bool geminiChatText(const String &text, AiReply &out) {
 bool geminiChatAudio(const uint8_t *wav, size_t wavLen, AiReply &out) {
   out = AiReply();
   if (!geminiReady()) {
-    out.error = "尚未設定 Gemini API Key（config.json 的 ai.api_key）";
+    out.error = "尚未設定 API Key（config.json 的 ai.api_key）";
     return false;
   }
   if (!wifiConnected()) {
@@ -317,9 +403,10 @@ bool geminiChatAudio(const uint8_t *wav, size_t wavLen, AiReply &out) {
   memcpy(body + prefix.length() + b64Len, suffix.c_str(), suffix.length());
   size_t bodyLen = prefix.length() + b64Len + suffix.length();
 
+  AiEndpoint ep;
   String resp, err;
   int status = 0;
-  bool sent = httpPostJson(buildPath(), body, bodyLen, resp, status, err);
+  bool sent = buildEndpoint(ep, err) && httpPostJson(ep, body, bodyLen, resp, status, err);
   free(body);
 
   if (!sent) {

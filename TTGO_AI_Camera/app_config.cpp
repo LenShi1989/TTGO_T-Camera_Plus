@@ -71,6 +71,7 @@ bool AppConfig::fromJson(const String &json, String *err) {
     readString(a["api_key"], key);
     // 網頁介面以 *** 代表「不變更」
     if (key != "***") ai.api_key = key;
+    readString(a["api_url"], ai.api_url);
     readString(a["model"], ai.model);
     readString(a["system_prompt"], ai.system_prompt);
     readU32(a["timeout_ms"], ai.timeout_ms);
@@ -131,6 +132,10 @@ bool AppConfig::fromJson(const String &json, String *err) {
   if (ai.max_output_tokens < 32) ai.max_output_tokens = 32;
   if (ai.max_output_tokens > 2048) ai.max_output_tokens = 2048;
   if (ai.system_prompt.isEmpty()) ai.system_prompt = kDefaultPrompt;
+  ai.api_url.trim();
+  if (ai.api_url.indexOf("://") < 0) ai.api_url = AI_DEFAULT_URL;
+  ai.model.trim();
+  if (ai.model.isEmpty()) ai.model = "gemini-2.0-flash";
   if (font_path.isEmpty()) font_path = "/font.bin";
   if (faces_path.isEmpty()) faces_path = "/faces.csv";
   return true;
@@ -147,6 +152,7 @@ String AppConfig::toJson(bool maskSecrets) const {
 
   JsonObject a = doc["ai"].to<JsonObject>();
   a["api_key"] = maskSecrets && !ai.api_key.isEmpty() ? "***" : ai.api_key;
+  a["api_url"] = ai.api_url;
   a["model"] = ai.model;
   a["system_prompt"] = ai.system_prompt;
   a["timeout_ms"] = ai.timeout_ms;

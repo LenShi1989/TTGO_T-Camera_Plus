@@ -20,7 +20,7 @@ TTGO T-Camera Plus（ESP32 + ST7789 240×240 + OV2640 + I2S 麥克風 + microSD�
 | 系統狀態 | WiFi SSID / 狀態 / IP / RSSI / AP、SPIFFS 目錄與容量、記憶體、PSRAM、SD、人臉數、電池、執行時間 |
 | SD 卡設定 | 目錄瀏覽、拖拉上傳（含進度）、文字檔線上編輯、下載、刪除、新增資料夾、容量顯示 |
 | WiFi 設定 | 掃描 SSID（含訊號強度）、手動輸入 SSID / 密碼、清除連線設定 |
-| AI 聊天機器人 | **板載 I2S 麥克風 ON/OFF 開關** + 裝置端錄音 → Gemini、文字聊天、繁體中文回覆、TFT 球體動畫、AI 設定（Key / 模型 / 提示詞） |
+| AI 聊天機器人 | **板載 I2S 麥克風 ON/OFF 開關** + 裝置端錄音 → Gemini、文字聊天、繁體中文回覆、TFT 球體動畫、AI 設定（API 網址 / Key / 模型 / 提示詞） |
 | CAMERA | 瀏覽器即時影像（JPEG 串流）、人臉框（綠 = 成功、紅 = 未知）、TFT 串流影像、TFT 人臉辨識、人臉 ID 加入 / 刪除 / CSV 匯出 |
 | 序列埠 | 僅輸出除錯訊息（115200 bps），不接受指令 |
 
@@ -103,6 +103,7 @@ TTGO T-Camera Plus（ESP32 + ST7789 240×240 + OV2640 + I2S 麥克風 + microSD�
   },
   "ai": {
     "api_key": "",
+    "api_url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
     "model": "gemini-2.0-flash",
     "system_prompt": "你是一個親切的繁體中文語音助理…",
     "timeout_ms": 45000,
@@ -142,7 +143,8 @@ TTGO T-Camera Plus（ESP32 + ST7789 240×240 + OV2640 + I2S 麥克風 + microSD�
 | `wifi.ssid` / `wifi.password` | 要連線的基地台；留空則開機進入 AP 模式 |
 | `wifi.ap_ssid` | AP 名稱前綴，實際為 `TTGO-AI-XXXX` |
 | `wifi.ap_password` | AP 密碼，至少 8 碼；留空為開放網路 |
-| `ai.api_key` | Google Gemini API Key |
+| `ai.api_url` | 模型端點；`{model}` 與 `{key}` 會在送出前替換，可指向自架 / 代理的 Gemini 相容服務（支援 http / https 與自訂 port） |
+| `ai.api_key` | API Key（預設 Gemini） |
 | `ai.model` | 模型名稱；若帳號不支援請改成可用的模型 |
 | `ai.system_prompt` | 角色設定與回覆風格 |
 | `ai.max_output_tokens` | 回覆長度上限（32–2048） |
@@ -204,7 +206,8 @@ id,name,v0,v1,v2,...,v511
 
 「AI 聊天機器人」頁最下方可直接修改：
 
-- Gemini API Key
+- API 網址（預設 Gemini，可改成自架或代理的 Gemini 相容端點）
+- API Key
 - 模型名稱
 - 系統提示詞
 
@@ -347,6 +350,16 @@ id,name,v0,v1,v2,...,v511
 | `power.*` | IP5306 電量 |
 | `webui.*` | SPIFFS、REST API、SD 上傳、語音、相機 |
 | `data/` | 上傳到 SPIFFS 的網頁前端 |
+
+### 雙核心分工
+
+| Core | 負責 |
+| --- | --- |
+| **core 0** | OV2640 取樣任務（`camera_face.cpp` 的 `camTaskFn`）：`esp_camera_fb_get()`、取樣失敗時自動重新初始化、fps / 影格大小統計。取到的影格放進「單格信箱」，等 core 1 歸還後才取下一張，閒置時不耗 CPU。 |
+| **core 1** | Arduino `loop()`：網頁伺服器（含 `/api/camera/frame` 傳送）、AI 聊天（I2S 錄音、Gemini 請求、TFT 球體動畫與繁體中文回覆）、TFT 顯示（ST7789 IPS 240×240）與人臉偵測。 |
+
+> Gemini 請求本身另外開一個釘在 core 1 的 FreeRTOS 任務（`gemini`），所以 TLS 握手
+> 不會卡住 TFT 動畫；core 0 專心供給相機影格，網頁即時影像與 AI 聊天互不阻塞。
 
 ---
 

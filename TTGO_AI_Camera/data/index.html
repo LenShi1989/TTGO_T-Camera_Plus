@@ -114,7 +114,10 @@
     <div class="card">
       <h2>AI 設定 <span class="muted">（寫入 SD 卡 /config.json）</span></h2>
       <div class="row">
-        <input id="aiKey" type="password" autocomplete="new-password" placeholder="Gemini API Key（*** 表示不變更）">
+        <input id="aiUrl" placeholder="API 網址，支援 {model} / {key} 佔位符（可自訂供應商）">
+      </div>
+      <div class="row">
+        <input id="aiKey" type="password" autocomplete="new-password" placeholder="API Key（*** 表示不變更）">
         <input id="aiModel" placeholder="模型，例如 gemini-2.5-flash">
       </div>
       <textarea id="aiPrompt" class="prompt" spellcheck="false" placeholder="系統提示詞（角色設定）"></textarea>

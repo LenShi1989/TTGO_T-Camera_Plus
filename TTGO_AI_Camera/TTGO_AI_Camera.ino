@@ -779,7 +779,8 @@ static void screenCamStream() {
   uint32_t frames = 0;
   while (s_pendingAction == 0) {
     uint32_t now = millis();
-    if (now - last >= 90) {
+    // 相機在 core 0 取樣，這裡只負責 blit，所以可以拉到約 20 fps。
+    if (now - last >= 50) {
       last = now;
       if (camPreviewToDisplay()) {
         frames++;
@@ -1044,7 +1045,8 @@ bool appAiRun(bool audio, const String &text, const uint8_t *wav, size_t wavLen,
   j->state = 1;
   s_job = j;
 
-  BaseType_t ok = xTaskCreatePinnedToCore(aiTaskFn, "gemini", 16384, j, 1, NULL, 0);
+  // AI 與 TFT / 網頁一起留在 core 1；core 0 專門跑相機取樣。
+  BaseType_t ok = xTaskCreatePinnedToCore(aiTaskFn, "gemini", 16384, j, 1, NULL, 1);
   if (ok != pdPASS) {
     s_job = nullptr;
     delete j;
@@ -1117,6 +1119,7 @@ void setup() {
   webuiBegin();
 
   appShowIdle();
+  Serial.println("[SYS] core 0 = 相機取樣／core 1 = AI、TFT、網頁");
   Serial.println("[LCD] 待機畫面已顯示（所有操作請由網頁進行）");
 }
 

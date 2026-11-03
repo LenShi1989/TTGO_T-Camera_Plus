@@ -104,7 +104,7 @@ JPEG 即時影像，以及人臉註冊 / 人臉辨識功能。
 | 繁體中文介面  | 16×16 中文字型由 SD 卡 `/font.bin` 載入（GNU Unifont）        |
 | 系統狀態      | WiFi 連線資訊、記憶體 / SD / 電池 / 執行時間、螢幕亮度調整    |
 | WiFi 設定     | 掃描 SSID、手動輸入 SSID + 密碼、清除連線設定                 |
-| AI 聊天機器人 | 板載 I2S 麥克風（網頁 ON/OFF 開關）→ Gemini 語音理解 → 繁體中文回覆；TFT 球體動畫特效 |
+| AI 聊天機器人 | 板載 I2S 麥克風（網頁 ON/OFF 開關）→ Gemini 語音理解 → 繁體中文回覆；TFT 球體動畫特效；API 端點可自訂 |
 | CAMERA        | 加入人臉 ID、刪除人臉 ID、人臉參數 CSV 匯出到 SD 卡           |
 | 人臉辨識      | 成功顯示 **綠色** 框、失敗顯示 **紅色** 框，並標示相似度      |
 | 網頁介面      | 前端 HTML 放在 **SPIFFS**，側邊欄五大頁籤，手機 / 電腦皆可用   |
@@ -228,6 +228,7 @@ u32 字數 | u32 索引位移 | u32 資料位移
   },
   "ai": {
     "api_key": "",
+    "api_url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
     "model": "gemini-2.0-flash",
     "system_prompt": "你是一個親切的繁體中文語音助理…",
     "timeout_ms": 45000,
@@ -265,7 +266,8 @@ u32 字數 | u32 索引位移 | u32 資料位移
 | `wifi.ssid` / `wifi.password` | 要連線的基地台；留空則開機直接進入 AP 模式              |
 | `wifi.ap_ssid`                | AP 名稱前綴，實際會加上 MAC 末四碼，例如 `TTGO-AI-1A2B` |
 | `wifi.ap_password`            | AP 密碼，至少 8 碼；留空則為開放網路                    |
-| `ai.api_key`                  | Google Gemini API Key                                   |
+| `ai.api_url`                  | 模型端點，`{model}` / `{key}` 會自動替換；可指向自架或代理的 Gemini 相容服務 |
+| `ai.api_key`                  | API Key（預設 Gemini）                                  |
 | `ai.model`                    | 模型名稱，預設 `gemini-2.0-flash`                       |
 | `ai.system_prompt`            | 系統提示詞（角色設定），可自由修改                      |
 | `ai.max_output_tokens`        | 回覆長度上限（32–2048）                                 |
@@ -463,12 +465,19 @@ TFT 待機儀表板（唯讀）
 | `app_config.*`       | `config.json` 讀寫（ArduinoJson）                       |
 | `storage.*`          | 共用 HSPI 的 SD 卡存取                                  |
 | `wifi_manager.*`     | STA / AP 連線、掃描                                     |
-| `gemini.*`           | Gemini `generateContent`（文字 + 語音）、手動 HTTP 解析 |
+| `gemini.*`           | Gemini `generateContent`（文字 + 語音）、可自訂端點、手動 HTTP 解析 |
 | `audio.*`            | I2S 麥克風錄音、VAD、自動增益                           |
 | `camera_face.*`      | OV2640、人臉偵測 / 註冊 / 辨識、CSV 存取                |
 | `power.*`            | IP5306 電量讀取                                         |
 | `webui.*`            | SPIFFS 靜態網頁、REST API、SD 上傳、語音與相機端點      |
 | `TTGO_AI_Camera/data/` | 上傳到 SPIFFS 的前端：`index.html` / `style.css` / `app.js` |
+
+### 雙核心分工
+
+| Core | 負責 |
+| --- | --- |
+| **core 0** | 相機取樣任務：`esp_camera_fb_get()`、自動重新初始化、fps 統計；影格以「單格信箱」交給 core 1，歸還後才取下一張。 |
+| **core 1** | Arduino `loop()`：網頁伺服器（含影像串流傳送）、AI 聊天（錄音 / Gemini / TFT 動畫與繁中回覆）、TFT 顯示與人臉偵測。 |
 
 ---
 
