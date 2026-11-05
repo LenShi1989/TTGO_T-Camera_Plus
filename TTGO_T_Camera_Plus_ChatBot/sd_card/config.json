@@ -1,0 +1,31 @@
+{
+  "device_name": "T-Camera-Plus",
+  "ap_password": "12345678",
+
+  "wifi_ssid": "",
+  "wifi_password": "",
+
+  "ai_mode": "openai",
+  "ai_base_url": "https://api.openai.com/v1",
+  "ai_api_key": "",
+  "ai_model": "gpt-4o-mini",
+  "ai_system_prompt": "你是住在這台 ESP32 小相機裡的 AI 助理，個性友善、有點幽默。一律使用繁體中文（台灣用語）回答，最多 80 個字，語氣口語化。不要使用 Markdown、標題、條列符號或表情符號，因為回覆會顯示在 240x240 的小螢幕上。",
+  "ai_temperature": 0.7,
+  "ai_max_tokens": 512,
+  "ai_timeout_ms": 45000,
+  "ai_history": 8,
+
+  "stt_enabled": false,
+  "stt_base_url": "",
+  "stt_api_key": "",
+  "stt_model": "whisper-1",
+  "stt_language": "zh",
+
+  "mic_sample_rate": 16000,
+  "mic_seconds": 6,
+  "mic_gain": 100,
+
+  "brightness": 200,
+  "rotation": 0,
+  "face_enabled": true
+}

@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T-Camera Plus AI 助理</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2316213a'/%3E%3Ccircle cx='11' cy='14' r='4' fill='%232dd4ff'/%3E%3Ccircle cx='21' cy='14' r='4' fill='%232dd4ff'/%3E%3Cpath d='M9 22c3 3 11 3 14 0' stroke='%236e78ff' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- ===================== 側邊欄 ===================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">AI</div>
+      <div class="brand-text">
+        <h1>TTGO 相機助理</h1>
+        <p id="deviceName">T-Camera Plus</p>
+      </div>
+    </div>
+
+    <div class="net-card" id="netCard">
+      <span class="dot" id="netDot"></span>
+      <div class="net-text">
+        <div id="netTitle">連線中…</div>
+        <div class="muted" id="netSub">--</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-view="chat"><span>💬</span>聊天</button>
+      <button class="nav-item" data-view="sd"><span>🗂️</span>SD 卡</button>
+      <button class="nav-item" data-view="wifi"><span>📶</span>Wi-Fi</button>
+      <button class="nav-item" data-view="ai"><span>🤖</span>AI 設定</button>
+      <button class="nav-item" data-view="system"><span>⚙️</span>系統</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div id="fwVersion">v--</div>
+      <div class="muted" id="apInfo">AP --</div>
+      <a class="muted link" id="mdnsLink" href="#" target="_blank" rel="noopener">--</a>
+    </div>
+  </aside>
+
+  <!-- ===================== 主要內容 ===================== -->
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h2 id="viewTitle">聊天</h2>
+        <p class="muted" id="viewSub">與裝置上的 AI 對話，回覆會同步顯示在 240x240 螢幕。</p>
+      </div>
+      <div class="topbar-right">
+        <span class="badge" id="chipBadge">ESP32</span>
+        <span class="badge" id="heapBadge">--</span>
+      </div>
+    </header>
+
+    <!-- ------------------- 聊天 ------------------- -->
+    <section class="view active" id="view-chat">
+      <div class="chat-layout">
+        <div class="messages" id="messages"></div>
+
+        <div class="jobbar hidden" id="jobBar">
+          <div class="jobbar-top">
+            <span id="jobPhase">處理中…</span>
+            <span id="jobPct">0%</span>
+          </div>
+          <div class="progress"><div class="progress-fill" id="jobFill"></div></div>
+        </div>
+
+        <div class="composer">
+          <textarea id="chatInput" rows="2" maxlength="900"
+            placeholder="輸入訊息… Enter 送出，Shift+Enter 換行"></textarea>
+          <div class="composer-side">
+            <button class="btn mic" id="micBtn" title="錄音並送出">
+              <span class="mic-ico">🎙️</span><span id="micLabel">語音</span>
+            </button>
+            <button class="btn primary" id="sendBtn">送出</button>
+          </div>
+        </div>
+
+        <div class="chips">
+          <span class="muted small">表情測試</span>
+          <button class="chip" data-face="idle">待機</button>
+          <button class="chip" data-face="listen">聆聽</button>
+          <button class="chip" data-face="think">思考</button>
+          <button class="chip" data-face="speak">說話</button>
+          <button class="chip" data-face="happy">開心</button>
+          <button class="chip" data-face="sad">難過</button>
+          <button class="chip" data-face="error">錯誤</button>
+          <button class="chip" data-face="sleep">睡覺</button>
+          <span class="spacer"></span>
+          <button class="chip danger" id="resetChat">清除對話</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------- SD 卡 ------------------- -->
+    <section class="view" id="view-sd">
+      <div class="card">
+        <div class="toolbar">
+          <button class="btn ghost" id="sdUp" title="回到上層">⬆</button>
+          <div class="crumb" id="sdPath">/</div>
+          <span class="spacer"></span>
+          <button class="btn ghost" id="sdRefresh">重新整理</button>
+          <button class="btn ghost" id="sdMkdir">新增資料夾</button>
+          <label class="btn primary file-label">
+            上傳檔案
+            <input type="file" id="sdFile" multiple hidden>
+          </label>
+        </div>
+
+        <div class="usage">
+          <div class="progress slim"><div class="progress-fill" id="sdUsed"></div></div>
+          <span class="muted small" id="sdUsageText">--</span>
+        </div>
+
+        <div class="dropzone" id="dropZone">
+          <div class="drop-ico">📥</div>
+          <div>把檔案拖放到這裡上傳</div>
+          <div class="muted small" id="dropHint">也可以按右上角的「上傳檔案」</div>
+          <div class="progress slim hidden" id="uploadWrap"><div class="progress-fill" id="uploadFill"></div></div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table" id="sdTable">
+            <thead>
+              <tr>
+                <th>名稱</th>
+                <th class="col-size">大小</th>
+                <th class="col-time">修改時間</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="sdBody">
+              <tr><td colspan="4" class="muted center">載入中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------- Wi-Fi ------------------- -->
+    <section class="view" id="view-wifi">
+      <div class="grid two">
+        <div class="card">
+          <h3>目前連線</h3>
+          <dl class="kv">
+            <dt>狀態</dt><dd id="wifiState">--</dd>
+            <dt>SSID</dt><dd id="wifiSsid">--</dd>
+            <dt>IP 位址</dt><dd id="wifiIp">--</dd>
+            <dt>訊號強度</dt><dd id="wifiRssi">--</dd>
+            <dt>裝置熱點</dt><dd id="wifiAp">--</dd>
+            <dt>mDNS</dt><dd id="wifiMdns">--</dd>
+            <dt>MAC</dt><dd id="wifiMac">--</dd>
+          </dl>
+          <div class="row">
+            <button class="btn ghost" id="wifiRefresh">重新整理</button>
+            <button class="btn danger ghost" id="wifiForget">清除已儲存網路</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>連線到 Wi-Fi</h3>
+          <div class="scan-head">
+            <button class="btn primary" id="scanBtn">掃描 SSID</button>
+            <span class="muted small" id="scanHint">掃描附近的無線網路</span>
+          </div>
+          <div class="scan-list" id="scanList">
+            <div class="muted small">尚未掃描</div>
+          </div>
+
+          <form id="wifiForm" class="form" autocomplete="off">
+            <label>
+              <span>SSID</span>
+              <input type="text" id="wifiSsidInput" maxlength="32" placeholder="無線網路名稱" required>
+            </label>
+            <label>
+              <span>密碼</span>
+              <input type="password" id="wifiPassInput" maxlength="64" placeholder="留空表示開放網路">
+            </label>
+            <label class="check">
+              <input type="checkbox" id="wifiShowPass">
+              <span>顯示密碼</span>
+            </label>
+            <div class="row">
+              <button class="btn primary" type="submit" id="wifiConnectBtn">連線</button>
+              <span class="muted small">連線後會寫入 SD 卡設定，重新開機自動連線。</span>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------- AI 設定 ------------------- -->
+    <section class="view" id="view-ai">
+      <form id="aiForm" class="stack" autocomplete="off">
+        <div class="card">
+          <h3>AI 提供者</h3>
+          <div class="preset-row">
+            <button type="button" class="chip" data-preset="openai">OpenAI</button>
+            <button type="button" class="chip" data-preset="openrouter">OpenRouter</button>
+            <button type="button" class="chip" data-preset="groq">Groq</button>
+            <button type="button" class="chip" data-preset="ollama">本機 Ollama</button>
+          </div>
+          <div class="grid two">
+            <label>
+              <span>協定模式</span>
+              <select id="aiMode">
+                <option value="openai">OpenAI 相容（/chat/completions）</option>
+                <option value="ollama">Ollama 本地（/api/chat）</option>
+              </select>
+            </label>
+            <label>
+              <span>模型</span>
+              <input type="text" id="aiModel" maxlength="80" placeholder="gpt-4o-mini / llama3.1:8b">
+            </label>
+          </div>
+          <label>
+            <span>服務網址（Base URL）</span>
+            <input type="text" id="aiBaseUrl" maxlength="200" placeholder="https://api.openai.com/v1">
+            <small class="muted">Ollama 範例：<code>http://192.168.1.100:11434</code>（區網內電腦的 IP）</small>
+          </label>
+          <label>
+            <span>API Key</span>
+            <input type="password" id="aiApiKey" maxlength="200" placeholder="sk-...（Ollama 可留空）">
+            <small class="muted">金鑰只會存在裝置的 SD 卡 <code>/config.json</code>，不會上傳到其他地方。</small>
+          </label>
+          <div class="grid three">
+            <label>
+              <span>溫度</span>
+              <input type="number" id="aiTemp" min="0" max="2" step="0.1">
+            </label>
+            <label>
+              <span>最大 tokens</span>
+              <input type="number" id="aiMaxTokens" min="32" max="4096" step="1">
+            </label>
+            <label>
+              <span>記住的對話輪數</span>
+              <input type="number" id="aiHistory" min="0" max="30" step="1">
+            </label>
+          </div>
+          <label>
+            <span>系統提示詞</span>
+            <textarea id="aiPrompt" rows="4" maxlength="800"></textarea>
+          </label>
+        </div>
+
+        <div class="card">
+          <h3>語音辨識（STT）</h3>
+          <label class="check">
+            <input type="checkbox" id="sttEnabled">
+            <span>啟用語音辨識（Whisper 相容 API）</span>
+          </label>
+          <div class="grid two">
+            <label>
+              <span>服務網址（留空沿用 AI Base URL）</span>
+              <input type="text" id="sttBaseUrl" maxlength="200" placeholder="https://api.openai.com/v1">
+            </label>
+            <label>
+              <span>API Key（留空沿用 AI Key）</span>
+              <input type="password" id="sttApiKey" maxlength="200" placeholder="sk-...">
+            </label>
+            <label>
+              <span>模型</span>
+              <input type="text" id="sttModel" maxlength="80" placeholder="whisper-1">
+            </label>
+            <label>
+              <span>語言</span>
+              <input type="text" id="sttLang" maxlength="8" placeholder="zh">
+            </label>
+          </div>
+          <p class="muted small">未啟用時，「語音」按鈕仍會錄音並存到 SD 卡 <code>/voice/voice.wav</code>。</p>
+        </div>
+
+        <div class="card">
+          <h3>麥克風</h3>
+          <div class="grid three">
+            <label>
+              <span>取樣率</span>
+              <select id="micRate">
+                <option value="8000">8000 Hz</option>
+                <option value="16000">16000 Hz</option>
+                <option value="22050">22050 Hz</option>
+                <option value="32000">32000 Hz</option>
+                <option value="44100">44100 Hz</option>
+                <option value="48000">48000 Hz</option>
+              </select>
+            </label>
+            <label>
+              <span>錄音秒數</span>
+              <input type="number" id="micSeconds" min="1" max="20" step="1">
+            </label>
+            <label>
+              <span>增益（%）</span>
+              <input type="number" id="micGain" min="25" max="400" step="5">
+            </label>
+          </div>
+        </div>
+
+        <div class="save-bar">
+          <button class="btn primary" type="submit" id="aiSaveBtn">儲存 AI 設定</button>
+          <span class="muted small">設定會立即寫入 SD 卡的 <code>config.json</code>。</span>
+        </div>
+      </form>
+    </section>
+
+    <!-- ------------------- 系統 ------------------- -->
+    <section class="view" id="view-system">
+      <div class="grid two">
+        <div class="card">
+          <h3>裝置資訊</h3>
+          <dl class="kv">
+            <dt>型號</dt><dd id="sysChip">--</dd>
+            <dt>韌體版本</dt><dd id="sysVersion">--</dd>
+            <dt>執行時間</dt><dd id="sysUptime">--</dd>
+            <dt>可用記憶體</dt><dd id="sysHeap">--</dd>
+            <dt>PSRAM</dt><dd id="sysPsram">--</dd>
+            <dt>Flash</dt><dd id="sysFlash">--</dd>
+            <dt>時間</dt><dd id="sysTime">--</dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <h3>顯示器</h3>
+          <div class="form">
+            <label>
+              <span>亮度 <b id="brightnessVal">--</b></span>
+              <input type="range" id="brightness" min="5" max="255" step="5">
+            </label>
+            <label>
+              <span>旋轉</span>
+              <select id="rotation">
+                <option value="0">0°</option>
+                <option value="1">90°</option>
+                <option value="2">180°</option>
+                <option value="3">270°</option>
+              </select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="faceEnabled">
+              <span>啟用臉部動畫</span>
+            </label>
+            <div class="row">
+              <button class="btn primary" id="displaySave">套用顯示設定</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>裝置名稱 / 熱點</h3>
+        <div class="grid three">
+          <label>
+            <span>裝置名稱</span>
+            <input type="text" id="devName" maxlength="32">
+          </label>
+          <label>
+            <span>熱點密碼（至少 8 碼）</span>
+            <input type="text" id="devApPass" maxlength="63">
+          </label>
+          <div class="row align-end">
+            <button class="btn primary" id="devSave">儲存</button>
+          </div>
+        </div>
+        <p class="muted small">變更名稱或熱點密碼後需要重新啟動，熱點 SSID 會變成「名稱-XXXX」。</p>
+      </div>
+
+      <div class="card">
+        <h3>SPIFFS 網頁檔案</h3>
+        <div class="usage">
+          <div class="progress slim"><div class="progress-fill" id="spiffsUsed"></div></div>
+          <span class="muted small" id="spiffsUsageText">--</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>檔案</th><th class="col-size">大小</th></tr></thead>
+            <tbody id="spiffsBody">
+              <tr><td colspan="2" class="muted center">載入中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card danger-zone">
+        <h3>重新啟動</h3>
+        <p class="muted small">儲存設定後若未生效，或裝置行為異常，可以重新啟動。</p>
+        <button class="btn danger" id="rebootBtn">重新啟動裝置</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ===================== 文字編輯器 ===================== -->
+<div class="modal hidden" id="editorModal">
+  <div class="modal-card">
+    <header>
+      <h3 id="editorTitle">編輯檔案</h3>
+      <button class="icon-btn" id="editorClose" title="關閉">✕</button>
+    </header>
+    <textarea id="editorText" spellcheck="false"></textarea>
+    <footer>
+      <span class="muted small" id="editorInfo"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="editorCancel">取消</button>
+      <button class="btn primary" id="editorSave">儲存</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ===================== 確認對話框 ===================== -->
+<div class="modal hidden" id="confirmModal">
+  <div class="modal-card small">
+    <header>
+      <h3 id="confirmTitle">確認</h3>
+      <button class="icon-btn" id="confirmClose" title="關閉">✕</button>
+    </header>
+    <p id="confirmText" class="confirm-text"></p>
+    <footer>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="confirmCancel">取消</button>
+      <button class="btn danger" id="confirmOk">確定</button>
+    </footer>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
