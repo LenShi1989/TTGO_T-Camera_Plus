@@ -156,7 +156,7 @@ TFT_eSPI 會自動優先載入（`TFT_eSPI.h` 的 `__has_include(<tft_setup.h>)`
 | OpenAI | openai | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | OpenRouter | openai | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
 | Groq | openai | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
-| 本機 Ollama | ollama | `http://127.0.0.1:11434` | `qwen3.5:9b` |
+| 本機 Ollama | ollama | `http://192.168.5.100:11434` | `qwen3.5:9b` |
 
 網址只要填到 `/v1`（或 Ollama 的根網址），韌體會自動接上
 `/chat/completions` 或 `/api/chat`。若 API Key 留空且模式是 `openai`，
@@ -170,7 +170,7 @@ Ollama 預設只聽 `127.0.0.1`，ESP32 連不到。請在跑 Ollama 的電腦�
 # Windows（系統內容 → 環境變數 → 新增使用者變數）
 setx OLLAMA_HOST 0.0.0.0
 # 重新啟動 Ollama 服務後確認
-curl http://127.0.0.1:11434/api/tags
+curl http://192.168.5.100:11434/api/tags
 ```
 
 並確認防火牆允許 TCP 11434。接著在網頁 AI 設定選「本機 Ollama」，
