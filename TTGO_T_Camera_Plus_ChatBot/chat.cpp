@@ -188,7 +188,10 @@ static bool parse_chat_body(const String &body, String &out, String &err) {
     if (v.is<const char *>()) content = v.as<const char *>();
   }
   if (!content || !*content) {
-    err = "AI 回應中找不到內容";
+    const char *thinking = doc["message"]["thinking"] | (const char *)nullptr;
+    err = (thinking && *thinking)
+              ? "模型只回傳了思考過程、沒有正文：請提高 max tokens，或確認 Ollama 支援並接受 think:false"
+              : "AI 回應中找不到內容";
     return false;
   }
   out = content;
@@ -233,6 +236,10 @@ bool chat_perform(const String &user_text, String &reply, String &err,
   req["model"] = cfg.ai_model;
   req["stream"] = false;
   if (cfg.ai_mode == "ollama") {
+    // Thinking models (qwen3 / qwen3.5 ...) spend the whole num_predict budget on
+    // their reasoning trace and return an empty message.content, which looks like
+    // a failure.  The 240x240 reply box has no room for a reasoning dump anyway.
+    req["think"] = false;
     JsonObject options = req.createNestedObject("options");
     options["temperature"] = cfg.ai_temperature;
     options["num_predict"] = cfg.ai_max_tokens;
