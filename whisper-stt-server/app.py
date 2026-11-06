@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     ai_mode = os.environ.get("AI_MODE", "ollama")
     ai_base_url = os.environ.get("AI_BASE_URL", "http://localhost:11434")
     ai_api_key = os.environ.get("AI_API_KEY", "")
-    ai_model = os.environ.get("AI_MODEL", "qwen3")
+    ai_model = os.environ.get("AI_MODEL", "qwen3.5:9b")
     ai_system_prompt = os.environ.get(
         "AI_SYSTEM_PROMPT",
         "你是住在這台 ESP32 小相機裡的 AI 助理，個性友善、有點幽默。"
