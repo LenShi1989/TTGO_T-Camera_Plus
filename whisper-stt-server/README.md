@@ -9,14 +9,17 @@ Python + FastAPI + faster-whisper 的繁體中文語音轉文字（STT）伺服�
 
 ## 環境
 
-- Python 3.10+
-- 已建立虛擬環境：`.venv/`
+- Python 3.12+
+- 已建立虛擬環境：`venv312/`
 - 必要套件：`fastapi`, `uvicorn[standard]`, `faster-whisper`, `python-multipart`
 
 ### 安裝
 
-```
-.venv\Scripts\pip.exe install -r requirements.txt
+```sh
+py -3.12 -m venv venv312               # 建立環境
+venv312\Scripts\activate               # 進入虛擬環境
+python -m pip install --upgrade pip    # 更新pip
+pip install -r requirements.txt        # 安裝套件
 ```
 
 第一執行時會自動下載 Whisper 模型（預設 `base`）。若希望模型放在特定目錄，
@@ -24,8 +27,9 @@ Python + FastAPI + faster-whisper 的繁體中文語音轉文字（STT）伺服�
 
 ### 啟動
 
-```
-.venv\Scripts\python.exe app_main.py
+```sh
+cd C:\Users\Len\Documents\1.GitHub\TTGO_T-Camera_Plus\whisper-stt-server
+venv312\Scripts\python.exe app_main.py
 ```
 
 預設聽在 `http://0.0.0.0:8000`。若要指定位址與通訊埠：
