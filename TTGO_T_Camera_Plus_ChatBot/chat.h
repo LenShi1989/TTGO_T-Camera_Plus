@@ -20,3 +20,7 @@ bool chat_transcribe(const String &wav_path, String &text, String &err,
                      ChatProgressFn progress);
 
 #endif  // TTGO_T_CAMERA_PLUS_CHAT_H
+
+// 一體化語音對話：錄音 + STT + AI 回應一步完成
+bool chat_voice_chat(const String &wav_path, String &transcript, String &reply, String &err,
+                     ChatProgressFn progress);

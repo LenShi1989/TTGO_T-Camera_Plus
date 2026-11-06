@@ -437,3 +437,136 @@ bool chat_transcribe(const String &wav_path, String &text, String &err,
   if (progress) progress(90, "辨識完成");
   return true;
 }
+
+// ---------------------------------------------------------------------------
+//  voice chat (一體化：STT + AI 回應)
+// ---------------------------------------------------------------------------
+bool chat_voice_chat(const String &wav_path, String &transcript, String &reply, String &err,
+                     ChatProgressFn progress) {
+  err = "";
+  transcript = "";
+  reply = "";
+
+  AppConfig cfg;
+  config_snapshot(cfg);
+  if (!cfg.stt_enabled) {
+    err = "尚未啟用語音辨識（STT），請先在 AI 設定中開啟";
+    return false;
+  }
+
+  String norm;
+  if (!sd_norm(wav_path, norm)) {
+    err = "錄音檔路徑不合法";
+    return false;
+  }
+
+  if (progress) progress(5, "讀取音檔");
+
+  size_t size = 0;
+  uint8_t *wav = nullptr;
+  if (!bus_lock(6000)) {
+    err = "SD 卡忙碌中";
+    return false;
+  }
+  File f = SD.open(norm, "r");
+  if (f && !f.isDirectory()) {
+    size = f.size();
+    if (size > 0 && size < 8 * 1024 * 1024) {
+      wav = (uint8_t *)ps_malloc(size);
+      if (!wav) wav = (uint8_t *)malloc(size);
+      if (wav) {
+        size_t got = f.read(wav, size);
+        if (got != size) {
+          free(wav);
+          wav = nullptr;
+          err = "讀取錄音檔失敗";
+        }
+      } else {
+        err = "記憶體不足，無法讀取錄音檔";
+      }
+    } else {
+      err = "錄音檔大小異常";
+    }
+  } else {
+    err = "找不到錄音檔";
+  }
+  f.close();
+  bus_unlock();
+
+  if (!wav) return false;
+
+  // 上傳到一體化端點 /voice/chat
+  String boundary = "----TTCam" + String((uint32_t)millis());
+  String head = "--" + boundary +
+                "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.wav\"\r\n"
+                "Content-Type: audio/wav\r\n\r\n";
+  String mid = "\r\n--" + boundary +
+               "\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n" +
+               (cfg.stt_language.length() ? cfg.stt_language : "zh") + "\r\n" +
+               "--" + boundary + "--\r\n";
+
+  size_t total = head.length() + size + mid.length();
+  uint8_t *body = (uint8_t *)ps_malloc(total);
+  if (!body) body = (uint8_t *)malloc(total);
+  if (!body) {
+    free(wav);
+    err = "記憶體不足，無法建立上傳內容";
+    return false;
+  }
+
+  memcpy(body, head.c_str(), head.length());
+  memcpy(body + head.length(), wav, size);
+  memcpy(body + head.length() + size, mid.c_str(), mid.length());
+  free(wav);
+
+  if (progress) progress(35, "上傳語音");
+
+  String url = stt_endpoint(cfg);
+  // 替換為 /voice/chat 端點
+  if (url.endsWith("/audio/transcriptions")) {
+    url = url.substring(0, url.length() - 22) + "voice/chat";
+  }
+
+  String api_key = cfg.stt_api_key.length() ? cfg.stt_api_key : cfg.ai_api_key;
+
+  String response;
+  int code = 0;
+  bool sent = http_post(cfg, url, api_key,
+                        "multipart/form-data; boundary=" + boundary,
+                        body, total, response, code, err);
+  free(body);
+  if (!sent) return false;
+
+  if (progress) progress(80, "語音辨識 + AI 理解");
+
+  DynamicJsonDocument doc(10240);
+  DeserializationError e = deserializeJson(doc, response);
+  if (e) {
+    err = String("無法解析語音對話回應：") + e.c_str();
+    if (code >= 400) err = String("HTTP ") + code + " - " + err;
+    return false;
+  }
+
+  // 解析 transcript
+  JsonVariantConst tv = doc["transcript"];
+  if (tv.is<const char *>() && *tv.as<const char *>()) {
+    transcript = tv.as<const char *>();
+    transcript.trim();
+  }
+
+  // 解析 reply
+  JsonVariantConst rv = doc["reply"];
+  if (rv.is<const char *>() && *rv.as<const char *>()) {
+    reply = rv.as<const char *>();
+    reply.trim();
+  }
+
+  if (!reply.length()) {
+    err = "AI 未回傳任何內容";
+    if (code >= 400) err = String("HTTP ") + code + " - " + err;
+    return false;
+  }
+
+  if (progress) progress(95, "完成");
+  return true;
+}

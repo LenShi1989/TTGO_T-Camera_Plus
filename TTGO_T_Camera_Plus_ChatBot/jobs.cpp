@@ -214,19 +214,16 @@ static void run_request(JobRequest *req) {
     }
 
     if (ok) {
-      job_progress(56, "語音辨識");
-      ok = chat_transcribe(VOICE_WAV_FILE, transcript, err,
+      // 使用一體化 voice_chat 端點（同時做 STT + AI 理解）
+      String st_temp, reply_temp;
+      ok = chat_voice_chat(VOICE_WAV_FILE, st_temp, reply_temp, err,
                            [](int p, const char *phase) {
-                             job_progress(56 + p * 18 / 100, phase);
+                             job_progress(35 + p * 60 / 100, phase);
                            });
-    }
-
-    if (ok && transcript.length()) {
-      job_progress(78, "思考中");
-      ok = chat_perform(transcript, result, err,
-                        [](int p, const char *phase) {
-                          job_progress(78 + p * 22 / 100, phase);
-                        });
+      if (ok) {
+        transcript = st_temp;
+        result = reply_temp;
+      }
     }
   }
 
