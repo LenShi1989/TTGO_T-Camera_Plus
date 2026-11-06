@@ -37,7 +37,8 @@ venv312\Scripts\python.exe app_main.py
 ```powershell
 $env:STT_HOST="192.168.5.100"
 $env:STT_PORT="8000"
-.venv\Scripts\python.exe app_main.py
+cd C:\Users\Len\Documents\1.GitHub\TTGO_T-Camera_Plus\whisper-stt-server
+venv312\Scripts\python.exe app_main.py
 ```
 
 ESP32 可直接使用：
@@ -62,7 +63,7 @@ ESP32 可直接使用：
 
 ```powershell
 $env:WHISPER_MODEL="small"
-.venv\Scripts\python.exe app_main.py
+venv312\Scripts\python.exe app_main.py
 ```
 
 常用選項（模型越大，辨識通常越好，但首次下載與記憶體需求也越高）：
@@ -96,7 +97,7 @@ $env:STT_HOST="127.0.0.1"
 $env:STT_PORT="8000"
 $env:WHISPER_MODEL="base"
 $env:WHISPER_MODEL_DIR="model" | Out-Null
-Start-Process -FilePath ".venv\Scripts\python.exe" -ArgumentList "app_main.py" -NoNewWindow
+Start-Process -FilePath "venv312\Scripts\python.exe" -ArgumentList "app_main.py" -NoNewWindow
 ```
 
 另開 PowerShell：

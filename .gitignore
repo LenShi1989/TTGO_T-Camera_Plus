@@ -49,3 +49,5 @@ htmlcov/
 # Misc
 *.log
 .import_test.log
+
+*.wav
