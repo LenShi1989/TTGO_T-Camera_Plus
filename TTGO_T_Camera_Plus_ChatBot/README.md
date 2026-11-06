@@ -85,7 +85,7 @@ TTGO_T_Camera_Plus_ChatBot/
    | Flash Size | **4MB (32Mb)** |
    | Partition Scheme | **Huge APP (3MB No OTA/1MB SPIFFS)** |
    | PSRAM | **Enabled** |
-   | Upload Speed | 921600 |
+   | Upload Speed | 115200 |
    | CPU Frequency | 240MHz |
 
    > 選 `ESP32 Dev Module` 也可以，只要把 PSRAM 設為 Enabled。

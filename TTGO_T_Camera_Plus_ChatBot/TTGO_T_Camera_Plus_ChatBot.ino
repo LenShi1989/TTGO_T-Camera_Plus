@@ -14,7 +14,7 @@
 //    Flash Size       : 4MB
 //    Partition Scheme : Huge APP (3MB No OTA/1MB SPIFFS)
 //    PSRAM            : Enabled
-//    Upload Speed     : 921600
+//    Upload Speed     : 115200
 //
 //  Libraries:
 //    TFT_eSPI 2.5.43
@@ -37,7 +37,8 @@
 // ---------------------------------------------------------------------------
 //  setup
 // ---------------------------------------------------------------------------
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   delay(300);
   Serial.println();
@@ -92,7 +93,8 @@ void setup() {
 // ---------------------------------------------------------------------------
 //  loop
 // ---------------------------------------------------------------------------
-void loop() {
+void loop()
+{
   web_loop();         // keep the HTTP server responsive
   wifi_loop();        // reconnect watchdog + NTP on first connect
   display_poll_job(); // mirror the AI worker state on the TFT

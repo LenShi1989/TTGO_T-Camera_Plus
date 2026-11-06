@@ -36,7 +36,7 @@ eggs/
 *.egg-info/
 
 # Virtual environments
-venv/
+venv*/
 .venv/
 env/
 ENV/
