@@ -123,10 +123,21 @@
           <div class="progress slim hidden" id="uploadWrap"><div class="progress-fill" id="uploadFill"></div></div>
         </div>
 
+        <div class="select-bar">
+          <label class="check">
+            <input type="checkbox" id="sdSelectAll">
+            <span>全選</span>
+          </label>
+          <span class="muted small" id="sdSelectInfo">已選 0 項</span>
+          <span class="spacer"></span>
+          <button class="btn danger" id="sdDeleteSel" disabled>刪除選取</button>
+        </div>
+
         <div class="table-wrap">
           <table class="table" id="sdTable">
             <thead>
               <tr>
+                <th class="col-check"></th>
                 <th>名稱</th>
                 <th class="col-size">大小</th>
                 <th class="col-time">修改時間</th>
@@ -134,7 +145,7 @@
               </tr>
             </thead>
             <tbody id="sdBody">
-              <tr><td colspan="4" class="muted center">載入中…</td></tr>
+              <tr><td colspan="5" class="muted center">載入中…</td></tr>
             </tbody>
           </table>
         </div>

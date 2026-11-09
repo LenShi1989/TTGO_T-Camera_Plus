@@ -17,6 +17,9 @@ const state = {
   sdPath: '/',
   sdParent: '/',
   sdLoaded: false,
+  sdEntries: [],
+  sdSelected: new Set(),
+  sdDeleting: false,
   jobTimer: null,
   jobKind: null,
   handledJobId: -1,
@@ -490,24 +493,29 @@ async function loadSd(path) {
     state.sdPath = data.path || '/';
     state.sdParent = data.parent || '/';
     state.sdLoaded = true;
+    state.sdEntries = data.entries || [];
+    state.sdSelected.clear();
 
     $('#sdPath').textContent = state.sdPath;
     $('#sdUp').disabled = state.sdPath === '/';
     renderUsage(data.used, data.total, '#sdUsed', '#sdUsageText');
-    renderSdRows(data.entries || []);
+    renderSdRows(state.sdEntries);
 
     if (data.truncated) toast('檔案數量過多，僅顯示前 ' + data.entries.length + ' 筆', 'warn');
   } catch (err) {
     toast('讀取 SD 卡失敗：' + err.message, 'error', 6000);
+    state.sdEntries = [];
+    state.sdSelected.clear();
     const body = $('#sdBody');
     body.innerHTML = '';
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 4;
+    td.colSpan = 5;
     td.className = 'muted center';
     td.textContent = err.message;
     tr.appendChild(td);
     body.appendChild(tr);
+    updateSdSelection();
   }
 }
 
@@ -518,16 +526,35 @@ function renderSdRows(entries) {
   if (!entries.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 4;
+    td.colSpan = 5;
     td.className = 'muted center';
     td.textContent = '這個資料夾是空的';
     tr.appendChild(td);
     body.appendChild(tr);
+    updateSdSelection();
     return;
   }
 
   entries.forEach((entry) => {
     const tr = document.createElement('tr');
+    const selected = state.sdSelected.has(entry.path);
+    if (selected) tr.classList.add('selected');
+
+    const tdCheck = document.createElement('td');
+    tdCheck.className = 'col-check';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'row-check';
+    check.dataset.path = entry.path;
+    check.checked = selected;
+    check.title = '選取「' + entry.name + '」';
+    check.addEventListener('change', () => {
+      if (check.checked) state.sdSelected.add(entry.path);
+      else state.sdSelected.delete(entry.path);
+      tr.classList.toggle('selected', check.checked);
+      updateSdSelection();
+    });
+    tdCheck.appendChild(check);
 
     const tdName = document.createElement('td');
     const nameCell = document.createElement('div');
@@ -597,9 +624,31 @@ function renderSdRows(entries) {
 
     tdActions.appendChild(actions);
 
-    tr.append(tdName, tdSize, tdTime, tdActions);
+    tr.append(tdCheck, tdName, tdSize, tdTime, tdActions);
     body.appendChild(tr);
   });
+
+  updateSdSelection();
+}
+
+function updateSdSelection() {
+  const valid = new Set(state.sdEntries.map((entry) => entry.path));
+  Array.from(state.sdSelected).forEach((path) => {
+    if (!valid.has(path)) state.sdSelected.delete(path);
+  });
+
+  const total = state.sdEntries.length;
+  const count = state.sdSelected.size;
+  const all = $('#sdSelectAll');
+  all.disabled = total === 0;
+  all.checked = total > 0 && count === total;
+  all.indeterminate = count > 0 && count < total;
+
+  $('#sdSelectInfo').textContent = total ? `已選 ${count} / ${total} 項` : '已選 0 項';
+
+  const btn = $('#sdDeleteSel');
+  btn.disabled = count === 0 || state.sdDeleting;
+  btn.textContent = state.sdDeleting ? '刪除中…' : (count ? `刪除選取 (${count})` : '刪除選取');
 }
 
 function miniButton(label, onClick, danger) {
@@ -652,6 +701,45 @@ async function deleteEntry(entry) {
   } catch (err) {
     toast(err.message, 'error');
   }
+}
+
+async function deleteSelected() {
+  if (state.sdDeleting) return;
+  const entries = state.sdEntries.filter((entry) => state.sdSelected.has(entry.path));
+  if (!entries.length) return;
+
+  const dirs = entries.filter((entry) => entry.dir).length;
+  const yes = await askConfirm(
+    '刪除選取的項目',
+    `確定要刪除這 ${entries.length} 個項目嗎？` +
+      (dirs ? `其中包含 ${dirs} 個資料夾，資料夾內的所有內容也會一併刪除。` : '')
+  );
+  if (!yes) return;
+
+  state.sdDeleting = true;
+  updateSdSelection();
+
+  let ok = 0;
+  const failed = [];
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i];
+    $('#sdDeleteSel').textContent = `刪除中 ${i + 1} / ${entries.length}`;
+    try {
+      await api('/api/sd/delete', { method: 'POST', body: { path: entry.path } });
+      ok += 1;
+      state.sdSelected.delete(entry.path);
+    } catch (err) {
+      failed.push(entry.name + '：' + err.message);
+    }
+  }
+
+  state.sdDeleting = false;
+  if (failed.length) {
+    toast(`已刪除 ${ok} 項，${failed.length} 項失敗（${failed[0]}）`, 'error', 7000);
+  } else {
+    toast(`已刪除 ${ok} 項`, 'good');
+  }
+  loadSd(state.sdPath);
 }
 
 async function uploadFiles(fileList) {
@@ -1070,6 +1158,23 @@ function bindSd() {
   $('#sdRefresh').addEventListener('click', () => loadSd(state.sdPath));
   $('#sdUp').addEventListener('click', () => loadSd(state.sdParent));
   $('#sdMkdir').addEventListener('click', mkdir);
+
+  $('#sdSelectAll').addEventListener('change', (ev) => {
+    if (ev.target.checked) {
+      state.sdEntries.forEach((entry) => state.sdSelected.add(entry.path));
+    } else {
+      state.sdSelected.clear();
+    }
+    $$('#sdBody .row-check').forEach((check) => {
+      const on = state.sdSelected.has(check.dataset.path);
+      check.checked = on;
+      const tr = check.closest('tr');
+      if (tr) tr.classList.toggle('selected', on);
+    });
+    updateSdSelection();
+  });
+
+  $('#sdDeleteSel').addEventListener('click', deleteSelected);
 
   $('#sdFile').addEventListener('change', (ev) => {
     uploadFiles(ev.target.files);

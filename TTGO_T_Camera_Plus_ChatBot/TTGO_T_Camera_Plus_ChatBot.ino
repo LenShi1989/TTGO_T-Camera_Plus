@@ -4,7 +4,7 @@
 //  AI chat assistant for the TTGO T-Camera Plus (ESP32-DOWDQ6, 4 MB flash,
 //  8 MB PSRAM, ST7789 240x240, microSD, I2S microphone).
 //
-//  Version ................. 1.6.1  (APP_VERSION in board_config.h)
+//  Version ................. 1.7.0  (APP_VERSION in board_config.h)
 //  Hardware map ............ board_config.h
 //  Persistent settings ..... /sd/config.json  (SPIFFS fallback)
 //  Web UI .................. data/  -> SPIFFS
