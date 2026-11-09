@@ -379,7 +379,8 @@ void display_preview_begin() {
   g_preview_rotation = tft.getRotation();
   tft.setRotation(0);
   tft.setSwapBytes(false);      // camera RGB565 is already MSB first
-  tft.invertDisplay(false);     // panel inversion would invert the photo
+  // Keep the panel inversion exactly as display_begin() configured it: the
+  // IPS panel needs INVON for both the UI and the camera RGB565 data.
   tft.fillScreen(TFT_BLACK);
   g_preview_hw = true;
   bus_unlock();
@@ -411,7 +412,6 @@ void display_preview_frame(const uint8_t *rgb565, uint16_t w, uint16_t h, int re
 void display_preview_end() {
   if (g_preview_hw && bus_lock(300)) {
     tft.setRotation(g_preview_rotation);
-    tft.invertDisplay(true);
     tft.fillScreen(C_BG);
     bus_unlock();
   }
