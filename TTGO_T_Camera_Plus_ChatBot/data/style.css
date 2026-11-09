@@ -478,6 +478,24 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .entry-name:hover { color: var(--accent); }
 .entry-name.dir { font-weight: 600; }
 
+.name-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.thumb {
+  width: 48px; height: 48px;
+  flex: 0 0 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border-2);
+  background: var(--bg-2);
+  cursor: zoom-in;
+  transition: border-color .15s, transform .15s;
+}
+.thumb:hover { border-color: var(--accent); transform: scale(1.04); }
+.thumb.broken {
+  cursor: default;
+  border-style: dashed;
+  background: linear-gradient(135deg, var(--bg-2), var(--panel-2));
+}
+
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .mini {
   padding: 3px 9px;
@@ -584,6 +602,18 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
   resize: none;
 }
 .confirm-text { padding: 18px 16px 6px; font-size: 14px; color: var(--dim); }
+
+.photo-card { width: min(760px, 100%); }
+.photo-stage {
+  display: grid; place-items: center;
+  padding: 12px;
+  min-height: 220px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--bg-2);
+}
+.photo-stage img { display: block; max-width: 100%; max-height: 64vh; border-radius: 8px; }
+.photo-stage img:not([src]) { visibility: hidden; }
 
 /* ---------- 通知 ---------- */
 .toasts {

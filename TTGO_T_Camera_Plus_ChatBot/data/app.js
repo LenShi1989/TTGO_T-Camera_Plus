@@ -460,6 +460,30 @@ function isTextFile(name) {
   return /\.(txt|md|markdown|json|js|css|html?|xml|ya?ml|ini|cfg|conf|log|csv|ini|ino|h|cpp|c|py|sh)$/i.test(name);
 }
 
+function isImageFile(name) {
+  return /\.(jpe?g|png|gif|bmp|webp)$/i.test(name);
+}
+
+function inlineSdUrl(path) {
+  return '/api/sd/download?inline=1&path=' + encodeURIComponent(path);
+}
+
+function openPhoto(entry) {
+  $('#photoTitle').textContent = entry.name;
+  $('#photoInfo').textContent = fmtBytes(entry.size) + (entry.mtime ? ' · ' + entry.mtime : '');
+  $('#photoImg').src = inlineSdUrl(entry.path);
+  const dl = $('#photoDownload');
+  dl.href = '/api/sd/download?path=' + encodeURIComponent(entry.path);
+  dl.setAttribute('download', entry.name);
+  $('#photoModal').classList.remove('hidden');
+}
+
+function closePhoto() {
+  $('#photoModal').classList.add('hidden');
+  $('#photoImg').removeAttribute('src');
+  $('#photoInfo').textContent = '';
+}
+
 async function loadSd(path) {
   try {
     const data = await api('/api/sd/list?path=' + encodeURIComponent(path || '/'));
@@ -506,16 +530,43 @@ function renderSdRows(entries) {
     const tr = document.createElement('tr');
 
     const tdName = document.createElement('td');
+    const nameCell = document.createElement('div');
+    nameCell.className = 'name-cell';
+
+    const image = !entry.dir && isImageFile(entry.name);
+    if (image) {
+      const thumb = document.createElement('img');
+      thumb.className = 'thumb';
+      thumb.alt = '';
+      thumb.loading = 'lazy';
+      thumb.decoding = 'async';
+      thumb.title = '點擊預覽 ' + entry.name;
+      thumb.src = inlineSdUrl(entry.path);
+      thumb.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openPhoto(entry);
+      });
+      thumb.addEventListener('error', () => {
+        thumb.classList.add('broken');
+        thumb.removeAttribute('src');
+      });
+      nameCell.appendChild(thumb);
+    }
+
     const link = document.createElement('a');
     link.className = 'entry-name' + (entry.dir ? ' dir' : '');
     link.href = '#';
     link.textContent = (entry.dir ? '📁 ' : '📄 ') + entry.name;
     if (entry.dir) {
       link.addEventListener('click', (ev) => { ev.preventDefault(); loadSd(entry.path); });
+    } else if (image) {
+      link.addEventListener('click', (ev) => { ev.preventDefault(); openPhoto(entry); });
     } else {
       link.addEventListener('click', (ev) => { ev.preventDefault(); openEditor(entry.path, entry.name); });
     }
-    tdName.appendChild(link);
+    nameCell.appendChild(link);
+    tdName.appendChild(nameCell);
 
     const tdSize = document.createElement('td');
     tdSize.textContent = entry.dir ? '—' : fmtBytes(entry.size);
@@ -528,6 +579,9 @@ function renderSdRows(entries) {
     const actions = document.createElement('div');
     actions.className = 'row-actions';
 
+    if (!entry.dir && isImageFile(entry.name)) {
+      actions.appendChild(miniButton('預覽', () => openPhoto(entry)));
+    }
     if (!entry.dir && isTextFile(entry.name)) {
       actions.appendChild(miniButton('編輯', () => openEditor(entry.path, entry.name)));
     }
@@ -1051,6 +1105,7 @@ function bindSd() {
   $('#editorSave').addEventListener('click', saveEditor);
   $('#editorCancel').addEventListener('click', closeEditor);
   $('#editorClose').addEventListener('click', closeEditor);
+  $('#photoClose').addEventListener('click', closePhoto);
 }
 
 function bindWifi() {
@@ -1093,7 +1148,7 @@ function bindModals() {
   $('#confirmCancel').addEventListener('click', () => closeConfirm(false));
   $('#confirmClose').addEventListener('click', () => closeConfirm(false));
 
-  [['#editorModal', closeEditor], ['#confirmModal', () => closeConfirm(false)]].forEach(([sel, fn]) => {
+  [['#editorModal', closeEditor], ['#photoModal', closePhoto], ['#confirmModal', () => closeConfirm(false)]].forEach(([sel, fn]) => {
     $(sel).addEventListener('click', (ev) => {
       if (ev.target === $(sel)) fn();
     });
@@ -1102,6 +1157,7 @@ function bindModals() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
     if (!$('#editorModal').classList.contains('hidden')) closeEditor();
+    if (!$('#photoModal').classList.contains('hidden')) closePhoto();
     if (!$('#confirmModal').classList.contains('hidden')) closeConfirm(false);
   });
 }

@@ -84,6 +84,7 @@ static const char *mime_for(const String &path) {
   if (ext == "png")  return "image/png";
   if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
   if (ext == "gif")  return "image/gif";
+  if (ext == "webp") return "image/webp";
   if (ext == "svg")  return "image/svg+xml";
   if (ext == "ico")  return "image/x-icon";
   if (ext == "bmp")  return "image/bmp";
@@ -340,8 +341,16 @@ static void api_sd_download() {
   int slash = name.lastIndexOf('/');
   if (slash >= 0) name = name.substring(slash + 1);
 
-  s_server.sendHeader("Content-Disposition",
-                      String("attachment; filename*=UTF-8''") + rfc5987(name));
+  // inline=1 lets the web UI show <img> previews without forcing a download.
+  if (arg_or("inline", "0") == "1") {
+    s_server.sendHeader("Content-Disposition",
+                        String("inline; filename*=UTF-8''") + rfc5987(name));
+    s_server.sendHeader("Cache-Control", "private, max-age=600");
+  } else {
+    s_server.sendHeader("Content-Disposition",
+                        String("attachment; filename*=UTF-8''") + rfc5987(name));
+    s_server.sendHeader("Cache-Control", "no-store");
+  }
   s_server.streamFile(f, mime_for(name));
   f.close();
   bus_unlock();

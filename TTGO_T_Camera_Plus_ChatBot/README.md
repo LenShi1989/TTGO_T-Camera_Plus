@@ -14,7 +14,7 @@ OpenAI／OpenRouter／Groq／本機 Ollama 對話、Whisper 語音輸入、語�
 
 | 分類 | 功能 |
 | --- | --- |
-| 網頁介面 | 深色側邊欄、聊天視窗、SD 卡檔案管理（拖放上傳／編輯／改名／刪除／下載）、Wi-Fi 掃描與連線、AI／STT／麥克風設定、系統資訊與顯示器設定 |
+| 網頁介面 | 深色側邊欄、聊天視窗、SD 卡檔案管理（拖放上傳／編輯／改名／刪除／下載、照片縮圖與放大預覽）、Wi-Fi 掃描與連線、AI／STT／麥克風設定、系統資訊與顯示器設定 |
 | AI 對話 | OpenAI 相容 `/chat/completions`、Ollama 本地 `/api/chat`（`stream:false`）、多輪對話記憶、自訂系統提示詞 |
 | 語音輸入 | I2S 麥克風錄音 → 16-bit 單聲道 WAV 存到 SD 卡 → Whisper 相容 `/audio/transcriptions` → 自動送出對話 |
 | 語音拍照 | 說「拍照」「幫我拍一張」等指令 → OV2640 擷取 JPEG → 自動存到 SD 卡 `/photos/photo_XXXX.jpg`（不呼叫 AI） |
@@ -127,7 +127,7 @@ TFT_eSPI 會自動優先載入（`TFT_eSPI.h` 的 `__has_include(<tft_setup.h>)`
 
 ```
 ==============================================
-  T-Camera Plus AI  v1.3.0
+  T-Camera Plus AI  v1.4.0
 ==============================================
 [tft] init ST7789 240x240
 [fs] mounting SPIFFS ...
@@ -191,11 +191,20 @@ Base URL 改成該電腦的區網 IP，模型填 `ollama list` 看到的名稱�
   `/photos/photo_0001.jpg`、`photo_0002.jpg`…，TFT 會顯示「已儲存照片 /photos/…」。
 - 拍照指令的判斷在裝置端完成（關鍵字比對），因此不需要 AI 服務也能拍照；
   但仍需要啟用 STT 才能把語音轉成文字。
-- 照片可直接在網頁的 **SD 卡** 頁瀏覽、下載或刪除。
+- 照片可直接在網頁的 **SD 卡** 頁瀏覽、下載或刪除；圖片檔案會顯示 48×48 縮圖，
+  點縮圖、檔名或「預覽」可開啟放大視窗，再按「下載」儲存原檔。
 
 > Whisper 需要能解 WAV 的服務。若使用 OpenAI，模型填 `whisper-1`、語言填 `zh`。
 > 若走本機 Whisper（例如 `whisper.cpp` server），請確認它支援
 > `multipart/form-data` 的 `file`、`model`、`language` 欄位。
+
+### SD 卡照片預覽
+
+- **SD 卡** 頁面會為 `.jpg`／`.png`／`.gif`／`.bmp`／`.webp` 顯示 48×48 縮圖。
+- 點縮圖、檔名或列尾的「預覽」會開啟放大視窗；下方「下載」可取得原始檔案。
+- 縮圖由瀏覽器直接縮放原始 JPEG（SVGA 800×600），裝置端不重新編碼，
+  因此一次載入大量照片時可能需要幾秒；載入失敗的圖片會顯示虛線框。
+- 其他文字檔仍維持點檔名直接開啟編輯器。
 
 ---
 
@@ -249,7 +258,7 @@ python tools\make_font.py
 | GET | `/api/spiffs` | SPIFFS 檔案清單與容量 |
 | GET | `/api/sd/list?path=/` | 列出 SD 卡目錄 |
 | GET | `/api/sd/read?path=/config.json` | 讀取文字檔（上限 32 KB） |
-| GET | `/api/sd/download?path=...` | 下載檔案 |
+| GET | `/api/sd/download?path=...` | 下載檔案（加上 `inline=1` 則以 inline 回應，供網頁內嵌預覽） |
 | POST | `/api/sd/upload?dir=/path` | 上傳單一檔案（multipart `file`；也可用 `X-Upload-Dir` 標頭） |
 | POST | `/api/sd/mkdir` | `{"path":"/新資料夾"}` |
 | POST | `/api/sd/delete` | `{"path":"/檔案"}`（資料夾會遞迴刪除） |
