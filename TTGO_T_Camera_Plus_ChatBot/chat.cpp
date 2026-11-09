@@ -86,14 +86,24 @@ static String strip_trailing_slash(String s) {
   return s;
 }
 
+// Users often type "192.168.1.10:8000" without a scheme.  HTTPClient::begin()
+// rejects such a URL, which surfaced as "無法建立 HTTP 連線", so default to
+// plain HTTP when no scheme was given.
+static String ensure_scheme(String s) {
+  s.trim();
+  if (s.length() == 0) return s;
+  if (s.indexOf("://") < 0) s = "http://" + s;
+  return s;
+}
+
 static String join_endpoint(const String &base, const String &suffix) {
-  String b = strip_trailing_slash(base);
+  String b = ensure_scheme(strip_trailing_slash(base));
   if (b.endsWith(suffix)) return b;
   return b + suffix;
 }
 
 static String stt_endpoint(const AppConfig &cfg) {
-  String base = cfg.stt_base_url.length() ? cfg.stt_base_url : cfg.ai_base_url;
+  String base = ensure_scheme(cfg.stt_base_url.length() ? cfg.stt_base_url : cfg.ai_base_url);
   base = strip_trailing_slash(base);
   const String suffix = "/audio/transcriptions";
   if (base.endsWith(suffix)) return base;
@@ -101,6 +111,17 @@ static String stt_endpoint(const AppConfig &cfg) {
     base = base.substring(0, base.length() - 17);
   }
   return base + suffix;
+}
+
+static String voice_endpoint(const AppConfig &cfg) {
+  String base = ensure_scheme(cfg.stt_base_url.length() ? cfg.stt_base_url : cfg.ai_base_url);
+  base = strip_trailing_slash(base);
+  if (base.endsWith("/audio/transcriptions")) {
+    base = base.substring(0, base.length() - 21);
+  } else if (base.endsWith("/chat/completions")) {
+    base = base.substring(0, base.length() - 17);
+  }
+  return base + "/voice/chat";
 }
 
 // ---------------------------------------------------------------------------
@@ -121,13 +142,15 @@ static bool http_post(const AppConfig &cfg, const String &url, const String &api
   http.setConnectTimeout(10000);
   http.setReuse(false);
 
+  // Last line of defence: never hand HTTPClient a URL without http(s)://.
+  String target = ensure_scheme(url);
   bool started = false;
-  if (url.startsWith("https://")) {
+  if (target.startsWith("https://")) {
     tls.setInsecure();
     tls.setHandshakeTimeout(20);
-    started = http.begin(tls, url);
-  } else {
-    started = http.begin(plain, url);
+    started = http.begin(tls, target);
+  } else if (target.startsWith("http://")) {
+    started = http.begin(plain, target);
   }
   if (!started) {
     err = "無法建立 HTTP 連線";
@@ -521,11 +544,9 @@ bool chat_voice_chat(const String &wav_path, String &transcript, String &reply, 
 
   if (progress) progress(35, "上傳語音");
 
-  String url = stt_endpoint(cfg);
-  // 替換為 /voice/chat 端點
-  if (url.endsWith("/audio/transcriptions")) {
-    url = url.substring(0, url.length() - 22) + "voice/chat";
-  }
+  // 一體化端點 /voice/chat：從同一個 Base URL 組出來，不要切割完整網址
+  // （舊寫法用 stt_endpoint 再減 22 字元，會把 :8000 的結尾切掉）。
+  String url = voice_endpoint(cfg);
 
   String api_key = cfg.stt_api_key.length() ? cfg.stt_api_key : cfg.ai_api_key;
 

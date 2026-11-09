@@ -124,7 +124,7 @@ TFT_eSPI 會自動優先載入（`TFT_eSPI.h` 的 `__has_include(<tft_setup.h>)`
 
 ```
 ==============================================
-  T-Camera Plus AI  v1.0.0
+  T-Camera Plus AI  v1.1.0
 ==============================================
 [tft] init ST7789 240x240
 [fs] mounting SPIFFS ...
@@ -307,7 +307,9 @@ curl http://192.168.4.1/api/job
 | 網頁顯示「尚未上傳網頁介面」 | 執行 **Tools → ESP32 Sketch Data Upload**；確認分區是 1 MB SPIFFS |
 | 開機卡在 `SD mount FAILED` | 拔插 SD 卡、確認 FAT32、避免 GPIO0 被拉低；沒有卡片時設定會存在 SPIFFS |
 | 網頁開啟很慢或 API 沒反應 | 確認有插 SD 卡（沒插卡時 SD 相關 API 會等待逾時）；重新整理即可 |
+| AI 回覆「無法建立 HTTP 連線」 | Base URL 少了 `http://`（例如只填 `192.168.5.100:8000`）；新版韌體會自動補上，舊版請補齊 |
 | AI 回覆「網路錯誤」 | 確認 STA 已連線、Base URL 可從區網連到；HTTPS 憑證採 `setInsecure()`，只適合個人區網使用 |
+| STT 回「HTTP 404」 | 服務網址要對著 `/audio/transcriptions` 的上一層（例如 `http://192.168.5.100:8000` 或 `.../v1`） |
 | Ollama 連不上 | `OLLAMA_HOST=0.0.0.0`、重啟服務、防火牆放行 11434、用電腦瀏覽器先測 `http://IP:11434` |
 | 錄音很小聲 | 提高 `mic_gain`（例如 200–300），或靠近麥克風；確認 `mic_sample_rate` 與 STT 支援的格式 |
 | 語音辨識回「HTTP 400」 | 多數 Whisper 服務要求 16 kHz 單聲道 WAV；把 `mic_sample_rate` 設回 16000 |
