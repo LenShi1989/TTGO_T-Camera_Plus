@@ -124,7 +124,7 @@ TFT_eSPI 會自動優先載入（`TFT_eSPI.h` 的 `__has_include(<tft_setup.h>)`
 
 ```
 ==============================================
-  T-Camera Plus AI  v1.1.0
+  T-Camera Plus AI  v1.2.0
 ==============================================
 [tft] init ST7789 240x240
 [fs] mounting SPIFFS ...

@@ -1,6 +1,6 @@
 # whisper-stt-server
 
-版本：**1.2.0**
+版本：**1.2.0**（與 ESP32 韌體版本一致）
 
 Python + FastAPI + faster-whisper 的繁體中文語音轉文字（STT）伺服器。
 

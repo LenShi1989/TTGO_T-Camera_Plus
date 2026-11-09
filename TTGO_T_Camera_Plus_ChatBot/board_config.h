@@ -40,7 +40,7 @@
 //  Application constants
 // ---------------------------------------------------------------------------
 #define APP_NAME        "T-Camera Plus AI"
-#define APP_VERSION     "1.1.0"
+#define APP_VERSION     "1.2.0"
 
 #define CONFIG_FILE_SD      "/config.json"   // relative to /sd
 #define CONFIG_FILE_SPIFFS  "/config.json"   // relative to SPIFFS
