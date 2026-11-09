@@ -10,7 +10,11 @@
 #include <SD.h>
 #include <esp_camera.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include "board_config.h"
+#include "display.h"
 #include "storage.h"
 
 #ifndef CAMERA_FRAME_SIZE
@@ -22,6 +26,12 @@
 #endif
 
 static bool s_ready = false;
+
+// Configuration used by camera_begin(); needed to switch to the RGB565
+// preview mode and back to JPEG again.
+static camera_config_t s_cfg;
+static bool            s_cfg_valid = false;
+static uint16_t       *s_preview = nullptr;
 
 bool camera_ready() { return s_ready; }
 
@@ -71,7 +81,8 @@ bool camera_begin(String &err) {
   cfg.jpeg_quality = CAMERA_JPEG_QUALITY;
   cfg.fb_count     = psramFound() ? 2 : 1;
 
-  esp_err_t res = esp_camera_init(&cfg);
+  s_cfg = cfg;
+  esp_err_t res = esp_camera_init(&s_cfg);
   if (res != ESP_OK) {
     err  = "相機初始化失敗（0x";
     err += String((unsigned)res, HEX);
@@ -85,7 +96,96 @@ bool camera_begin(String &err) {
     s->set_framesize(s, CAMERA_FRAME_SIZE);
   }
 
+  s_cfg_valid = true;
   s_ready = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+//  live preview -> 240x180 RGB565 on the TFT
+// ---------------------------------------------------------------------------
+static bool apply_camera_config(const camera_config_t &cfg) {
+  esp_camera_deinit();
+  return esp_camera_init(&cfg) == ESP_OK;
+}
+
+static void scale_rgb565(const uint16_t *src, int sw, int sh,
+                         uint16_t *dst, int dw, int dh) {
+  for (int y = 0; y < dh; ++y) {
+    int sy = (int)((long)y * sh / dh);
+    const uint16_t *srow = src + (long)sy * sw;
+    uint16_t *drow = dst + (long)y * dw;
+    for (int x = 0; x < dw; ++x) {
+      int sx = (int)((long)x * sw / dw);
+      drow[x] = srow[sx];
+    }
+  }
+}
+
+bool camera_preview(uint8_t seconds) {
+  if (!s_ready || !s_cfg_valid) return false;
+  if (seconds < 1)  seconds = 1;
+  if (seconds > 10) seconds = 10;
+
+  // The panel is 240x240; QVGA keeps the preview light enough to stay fluid.
+  const int dst_w = TFT_WIDTH_PX;
+  const int dst_h = 180;
+  if (!s_preview) {
+    s_preview = (uint16_t *)ps_malloc((size_t)dst_w * dst_h * sizeof(uint16_t));
+    if (!s_preview) return false;
+  }
+
+  camera_config_t pv = s_cfg;
+  pv.pixel_format = PIXFORMAT_RGB565;
+  pv.frame_size   = FRAMESIZE_QVGA;
+  pv.fb_count     = 1;
+  pv.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
+
+  if (!apply_camera_config(pv)) {
+    // Put the normal JPEG mode back; the photo may still work.
+    s_ready = apply_camera_config(s_cfg);
+    return false;
+  }
+
+  // Drop the first frames so auto-exposure/white balance can settle.
+  for (int i = 0; i < 2; ++i) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb) esp_camera_fb_return(fb);
+  }
+
+  display_preview_begin();
+
+  uint32_t start = millis();
+  uint32_t total = (uint32_t)seconds * 1000UL;
+  for (;;) {
+    uint32_t elapsed = millis() - start;
+    if (elapsed >= total) break;
+    int remain = (int)((total - elapsed + 999UL) / 1000UL);
+
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+    if (fb->format == PIXFORMAT_RGB565 && fb->width && fb->height) {
+      scale_rgb565((const uint16_t *)fb->buf, (int)fb->width, (int)fb->height,
+                   s_preview, dst_w, dst_h);
+      display_preview_frame((const uint8_t *)s_preview, dst_w, dst_h, remain);
+    }
+    esp_camera_fb_return(fb);
+  }
+
+  display_preview_end();
+
+  // Back to JPEG/SVGA for the still photo.  Re-initialising the sensor resets
+  // auto-exposure, so drop a few frames before the shutter fires.
+  s_ready = apply_camera_config(s_cfg);
+  if (!s_ready) return false;
+  for (int i = 0; i < 3; ++i) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb) esp_camera_fb_return(fb);
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
   return true;
 }
 

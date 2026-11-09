@@ -17,7 +17,7 @@ OpenAI／OpenRouter／Groq／本機 Ollama 對話、Whisper 語音輸入、語�
 | 網頁介面 | 深色側邊欄、聊天視窗、SD 卡檔案管理（拖放上傳／編輯／改名／刪除／下載、照片縮圖與放大預覽）、Wi-Fi 掃描與連線、AI／STT／麥克風設定、系統資訊與顯示器設定 |
 | AI 對話 | OpenAI 相容 `/chat/completions`、Ollama 本地 `/api/chat`（`stream:false`）、多輪對話記憶、自訂系統提示詞 |
 | 語音輸入 | I2S 麥克風錄音 → 16-bit 單聲道 WAV 存到 SD 卡 → Whisper 相容 `/audio/transcriptions` → 自動送出對話 |
-| 語音拍照 | 說「拍照」「幫我拍一張」等指令 → TFT 顯示 3 秒倒數 → OV2640 擷取 JPEG → 自動存到 SD 卡 `/photos/photo_XXXX.jpg`（不呼叫 AI） |
+| 語音拍照 | 說「拍照」「幫我拍一張」等指令 → TFT 顯示相機即時預覽 3 秒 → OV2640 擷取 JPEG → 自動存到 SD 卡 `/photos/photo_XXXX.jpg`（不呼叫 AI） |
 | TFT 顯示 | 240x240 狀態列（時間／IP）、8 種表情動畫（待機／聆聽／思考／說話／開心／難過／錯誤／睡覺）、繁體中文 16x16 點陣字、回覆同步上螢幕 |
 | 設定儲存 | 所有參數都存在 SD 卡 `/config.json`；SD 卡不在時退回 SPIFFS `/config.json` |
 | 網路 | 永遠開啟 AP+STA：熱點 `名稱-XXXX`（預設密碼 `12345678`，`192.168.4.1`），同時連線家中路由器，支援 mDNS `http://<名稱>.local/` |
@@ -127,7 +127,7 @@ TFT_eSPI 會自動優先載入（`TFT_eSPI.h` 的 `__has_include(<tft_setup.h>)`
 
 ```
 ==============================================
-  T-Camera Plus AI  v1.5.0
+  T-Camera Plus AI  v1.6.0
 ==============================================
 [tft] init ST7789 240x240
 [fs] mounting SPIFFS ...
@@ -191,9 +191,11 @@ Base URL 改成該電腦的區網 IP，模型填 `ollama list` 看到的名稱�
   `/photos/photo_0001.jpg`、`photo_0002.jpg`…，TFT 會顯示「已儲存照片 /photos/…」。
 - 拍照指令的判斷在裝置端完成（關鍵字比對），因此不需要 AI 服務也能拍照；
   但仍需要啟用 STT 才能把語音轉成文字。
-- 辨識到拍照指令後，TFT 會顯示 **3 → 2 → 1** 倒數與「請看鏡頭，保持微笑」，
-  倒數結束才按下快門，方便先擺好姿勢；倒數秒數可用 `board_config.h` 的
-  `PHOTO_COUNTDOWN_SECONDS` 調整（預設 3 秒）。
+- 辨識到拍照指令後，TFT 會先顯示 **相機即時預覽 3 秒**（右上角倒數），
+  預覽結束才擷取 SVGA JPEG 存檔，方便先擺好姿勢；預覽秒數可用
+  `board_config.h` 的 `PHOTO_PREVIEW_SECONDS` 調整（預設 3 秒）。
+- 預覽以 QVGA 擷取並縮放成 240×180 顯示（上下留黑邊），存檔仍是
+  SVGA 800×600；預覽期間面板暫時關閉顏色反轉，結束後自動還原。
 - 照片可直接在網頁的 **SD 卡** 頁瀏覽、下載或刪除；圖片檔案會顯示 48×48 縮圖，
   點縮圖、檔名或「預覽」可開啟放大視窗，再按「下載」儲存原檔。
 

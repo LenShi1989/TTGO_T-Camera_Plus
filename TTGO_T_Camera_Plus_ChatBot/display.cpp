@@ -7,9 +7,6 @@
 #include <math.h>
 #include <time.h>
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -64,11 +61,10 @@ static uint32_t       g_toast_until = 0;
 static bool           g_toast_active = false;
 static bool           g_toast_dirty = true;
 
-// Photo countdown: requested by the worker task, drawn by display_tick().
-static volatile bool     g_photo_cd_active = false;
-static volatile uint32_t g_photo_cd_start  = 0;
-static volatile uint32_t g_photo_cd_ms     = 0;
-static int               g_photo_cd_shown  = -1;
+// Live camera preview: camera.cpp pushes frames while this is true.
+static volatile bool g_preview_active = false;
+static bool          g_preview_hw = false;   // panel modes were changed
+static uint8_t       g_preview_rotation = 0;
 
 static uint32_t       g_boot_ms = 0;
 
@@ -283,36 +279,6 @@ static void draw_text_area() {
                  C_BG, TFT_WIDTH_PX - 12, 6, nullptr);
 }
 
-static void draw_photo_countdown(int remain) {
-  tft.fillRect(0, FACE_AREA_Y, TFT_WIDTH_PX, FACE_AREA_H, C_BG);
-
-  tft.fillRoundRect(14, 26, 212, 96, 20, C_PANEL);
-  tft.drawRoundRect(14, 26, 212, 96, 20, C_ACCENT);
-
-  int label_w = font_measure("準備拍照");
-  int label_x = (label_w > 0) ? (TFT_WIDTH_PX - label_w) / 2 : 24;
-  font_draw_text(tft, label_x, 30, "準備拍照",
-                 C_DIM, C_PANEL, TFT_WIDTH_PX - 24, 1);
-
-  // Big digit built from the built-in GLCD font (only font 1 is compiled in,
-  // so scale it up instead of pulling in an extra TFT_eSPI font).
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextFont(1);
-  tft.setTextSize(6);
-  tft.setTextColor(C_ACCENT, C_PANEL);
-  tft.drawString(String(remain), TFT_WIDTH_PX / 2, 88);
-  tft.setTextSize(1);
-  tft.setTextDatum(TL_DATUM);
-
-  // Hint below; the job result replaces this once the photo is saved.
-  tft.fillRect(0, TEXT_AREA_Y, TFT_WIDTH_PX, TEXT_AREA_H, C_BG);
-  tft.drawFastHLine(0, TEXT_AREA_Y - 2, TFT_WIDTH_PX, C_PANEL2);
-  font_draw_text(tft, 6, TEXT_AREA_Y + 6, "請看鏡頭，保持微笑", C_TEXT, C_BG,
-                 TFT_WIDTH_PX - 12, 2);
-  font_draw_text(tft, 6, TEXT_AREA_Y + 6 + FONT_LINE_HEIGHT * 2, "倒數結束後自動拍照",
-                 C_DIM, C_BG, TFT_WIDTH_PX - 12, 1);
-}
-
 // ---------------------------------------------------------------------------
 //  public API
 // ---------------------------------------------------------------------------
@@ -407,22 +373,53 @@ void display_toast(const String &text, uint16_t color) {
   g_toast_dirty = true;
 }
 
-void display_photo_countdown(uint8_t seconds) {
-  if (seconds < 1)  seconds = 1;
-  if (seconds > 10) seconds = 10;
+void display_preview_begin() {
+  g_preview_active = true;
+  if (!bus_lock(300)) return;
+  g_preview_rotation = tft.getRotation();
+  tft.setRotation(0);
+  tft.setSwapBytes(false);      // camera RGB565 is already MSB first
+  tft.invertDisplay(false);     // panel inversion would invert the photo
+  tft.fillScreen(TFT_BLACK);
+  g_preview_hw = true;
+  bus_unlock();
+}
 
-  g_photo_cd_ms     = (uint32_t)seconds * 1000UL;
-  g_photo_cd_start  = millis();
-  g_photo_cd_shown  = -1;
-  g_photo_cd_active = true;
+void display_preview_frame(const uint8_t *rgb565, uint16_t w, uint16_t h, int remain) {
+  if (!g_preview_active || !rgb565 || w == 0 || h == 0) return;
+  if (!bus_lock(200)) return;
 
-  // display_tick() runs in loop(); wait for it to finish the countdown.  The
-  // hard deadline keeps this task alive even if the UI stops updating.
-  uint32_t deadline = millis() + g_photo_cd_ms + 3000UL;
-  while (g_photo_cd_active && (int32_t)(millis() - deadline) < 0) {
-    vTaskDelay(pdMS_TO_TICKS(20));
+  int x = (TFT_WIDTH_PX - (int)w) / 2;
+  int y = (TFT_HEIGHT_PX - (int)h) / 2;
+  tft.pushImage(x, y, (int32_t)w, (int32_t)h, (const uint16_t *)rgb565);
+
+  if (remain > 0) {
+    int bx = TFT_WIDTH_PX - 32, by = 4;
+    tft.fillRoundRect(bx, by, 26, 24, 7, TFT_BLACK);
+    tft.drawRoundRect(bx, by, 26, 24, 7, C_ACCENT);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(1);
+    tft.setTextSize(3);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(String(remain), bx + 13, by + 12);
+    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
   }
-  g_photo_cd_active = false;
+  bus_unlock();
+}
+
+void display_preview_end() {
+  if (g_preview_hw && bus_lock(300)) {
+    tft.setRotation(g_preview_rotation);
+    tft.invertDisplay(true);
+    tft.fillScreen(C_BG);
+    bus_unlock();
+  }
+  g_preview_hw = false;
+  g_preview_active = false;
+  g_speech_dirty = true;
+  g_face_dirty = true;
+  g_last_status = 0;
 }
 
 void display_boot_screen() {
@@ -445,8 +442,8 @@ void display_poll_job() {
   static uint32_t last_id = 0;
   static uint8_t  last_status = 255;
 
-  // The countdown owns the face + text area until it ends.
-  if (g_photo_cd_active) return;
+  // The preview owns the whole panel while frames are being pushed.
+  if (g_preview_active) return;
 
   JobSnapshot js;
   jobs_snapshot(js);
@@ -509,6 +506,8 @@ const char *display_face_name(FaceExpression expr) {
 FaceExpression display_current_face() { return g_face; }
 
 void display_tick() {
+  if (g_preview_active) return;
+
   uint32_t now = millis();
 
   if (g_face_persistent == false && g_face_until && now > g_face_until) {
@@ -536,27 +535,6 @@ void display_tick() {
   if (now - g_last_status >= 1000) {
     g_last_status = now;
     draw_status_bar();
-  }
-
-  // Photo countdown takes over the face + text area until it expires.
-  if (g_photo_cd_active) {
-    uint32_t elapsed = now - g_photo_cd_start;
-    if (elapsed >= g_photo_cd_ms) {
-      g_photo_cd_active = false;
-      g_photo_cd_shown  = -1;
-      g_speech          = "拍照中";
-      g_speech_dirty    = true;
-      g_face_dirty      = true;
-    } else {
-      int remain = (int)((g_photo_cd_ms - elapsed + 999UL) / 1000UL);
-      if (remain != g_photo_cd_shown) {
-        g_photo_cd_shown = remain;
-        draw_photo_countdown(remain);
-      }
-      tft.endWrite();
-      bus_unlock();
-      return;
-    }
   }
 
   if (g_toast_active) {

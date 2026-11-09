@@ -32,9 +32,11 @@ void display_set_brightness(uint8_t value);
 void display_boot_screen();
 void display_poll_job();               // mirrors the AI worker state on screen
 
-// Shows a N..1 countdown in the face area and blocks until it finishes.
-// Call from the worker task; display_tick() does the actual drawing.
-void display_photo_countdown(uint8_t seconds);
+// Live camera viewfinder.  camera.cpp calls begin(), pushes RGB565 frames
+// with frame(), then calls end() before capturing the JPEG.
+void display_preview_begin();
+void display_preview_end();
+void display_preview_frame(const uint8_t *rgb565, uint16_t w, uint16_t h, int remain);
 
 FaceExpression display_face_from_name(const String &name);
 const char    *display_face_name(FaceExpression expr);
