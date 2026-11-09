@@ -20,7 +20,7 @@ from app_logic import transcribe_wav_bytes
 from ollama_client import AIClient
 
 logger = logging.getLogger("whisper-stt")
-SERVER_VERSION = "1.4.0"
+SERVER_VERSION = "1.5.0"
 
 
 class AppState:

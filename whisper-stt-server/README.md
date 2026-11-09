@@ -1,6 +1,6 @@
 # whisper-stt-server
 
-版本：**1.4.0**（與 ESP32 韌體版本一致）
+版本：**1.5.0**（與 ESP32 韌體版本一致）
 
 Python + FastAPI + faster-whisper 的繁體中文語音轉文字（STT）伺服器。
 
@@ -169,6 +169,7 @@ $res.Content.ReadAsStringAsync().Result
 
 ## 版本紀錄
 
+- **1.5.0**：與 ESP32 韌體同步版本。語音拍照新增 TFT 3 秒倒數畫面（裝置端功能），伺服器端無 API 變更。
 - **1.4.0**：與 ESP32 韌體同步版本。SD 卡頁新增照片縮圖與放大預覽（搭配韌體 `/api/sd/download?inline=1`），伺服器端無 API 變更。
 - **1.3.0**：與 ESP32 韌體同步版本。語音拍照為裝置端功能（OV2640 → SD 卡 `/photos`），伺服器端無 API 變更。
 - **1.2.0**：新增 OpenAI／Ollama 相容對話端點（`/chat/completions`、`/api/chat`）、`/v1` 路徑與 `/v1/models`；修正 STT 的 bytes 解碼與 PyAV 相容性；`app_main.py` 支援 `STT_HOST`／`STT_PORT`。

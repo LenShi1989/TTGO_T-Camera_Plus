@@ -12,6 +12,7 @@
 #include "board_config.h"
 #include "camera.h"
 #include "chat.h"
+#include "display.h"
 #include "storage.h"
 
 struct JobRequest {
@@ -226,7 +227,11 @@ static void run_request(JobRequest *req) {
         transcript = st_temp;
 
         if (camera_is_photo_command(st_temp)) {
-          job_progress(78, "拍照中");
+          // Show a countdown on the TFT so the user can pose before the
+          // shutter fires; then save the JPEG to the SD card.
+          job_progress(78, "準備拍照");
+          display_photo_countdown(PHOTO_COUNTDOWN_SECONDS);
+          job_progress(82, "拍照中");
           String photo_path;
           size_t photo_bytes = 0;
           String perr;
