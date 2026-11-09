@@ -3,4 +3,5 @@ uvicorn[standard]>=0.29
 faster-whisper>=0.11
 python-multipart>=0.0.9
 httpx>=0.27
-
+# PyAV 14+ 移除了 metadata_errors，會讓 faster-whisper 的 decode_audio 失敗
+av>=11,<14

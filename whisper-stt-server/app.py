@@ -5,8 +5,9 @@ import os
 import time
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 try:
     from faster_whisper import WhisperModel
@@ -19,6 +20,7 @@ from app_logic import transcribe_wav_bytes
 from ollama_client import AIClient
 
 logger = logging.getLogger("whisper-stt")
+SERVER_VERSION = "1.2.0"
 
 
 class AppState:
@@ -28,6 +30,48 @@ class AppState:
 
 
 state = AppState()
+
+
+class ChatMessage(BaseModel):
+    role: str = "user"
+    content: str = ""
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str | None = None
+    messages: list[ChatMessage] | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    stream: bool = False
+
+
+def _error(message: str, code: int = status.HTTP_500_INTERNAL_SERVER_ERROR) -> JSONResponse:
+    """OpenAI / Ollama 風格的錯誤回應，讓 ESP32 能解析 error.message。"""
+    return JSONResponse(
+        status_code=code,
+        content={"error": {"message": message, "type": "server_error"}},
+    )
+
+
+def _reply_of(messages: list[dict[str, str]], temperature: float | None = None,
+              max_tokens: int | None = None) -> str:
+    ai = state.ai
+    if ai is None:
+        raise RuntimeError("AI 客戶端尚未初始化")
+
+    cleaned = [
+        {"role": str(m.get("role") or "user"), "content": str(m.get("content") or "")}
+        for m in messages
+        if m.get("content")
+    ]
+    if not cleaned:
+        raise ValueError("messages 不能為空")
+
+    reply = ai.chat(cleaned, temperature=temperature, max_tokens=max_tokens)
+    reply = (reply or "").strip()
+    if not reply:
+        raise RuntimeError("AI 未回傳任何內容")
+    return reply
 
 
 @asynccontextmanager
@@ -98,7 +142,7 @@ def _compute_type_for(device: str) -> str:
     return "int8"
 
 
-app = FastAPI(title="whisper-stt-server", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="whisper-stt-server", version=SERVER_VERSION, lifespan=lifespan)
 
 
 @app.get("/health")
@@ -106,15 +150,58 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "service": "whisper-stt-server",
+        "version": SERVER_VERSION,
         "whisper_loaded": state.whisper is not None,
         "ai_ready": state.ai is not None,
     }
 
+
+# ---------------------------------------------------------------------------
+#  模型列表（OpenAI 相容 / Ollama 相容）
+# ---------------------------------------------------------------------------
+@app.get("/v1/models")
+@app.get("/models")
+async def list_models() -> dict[str, Any]:
+    data = [
+        {
+            "id": os.environ.get("WHISPER_MODEL", "base"),
+            "object": "model",
+            "created": 0,
+            "owned_by": "whisper-stt-server",
+        }
+    ]
+    ai = state.ai
+    if ai is not None:
+        data.append(
+            {
+                "id": ai.model,
+                "object": "model",
+                "created": 0,
+                "owned_by": "ollama" if ai.mode == "ollama" else "openai-compatible",
+            }
+        )
+    return {"object": "list", "data": data}
+
+
+@app.get("/api/tags")
+async def ollama_tags() -> dict[str, Any]:
+    return {
+        "models": [
+            {"name": item["id"], "model": item["id"]}
+            for item in (await list_models())["data"]
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+#  語音轉文字（OpenAI 相容，含 /v1 與無前綴兩種路徑）
+# ---------------------------------------------------------------------------
 @app.post("/audio/transcriptions")
+@app.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     file: UploadFile = File(...),
-    model: str | None = None,
-    language: str | None = None,
+    model: str | None = Form(None),
+    language: str | None = Form(None),
 ) -> JSONResponse:
     start = time.perf_counter()
     raw = await file.read()
@@ -148,13 +235,109 @@ async def audio_transcriptions(
 
 
 @app.post("/transcribe")
+@app.post("/v1/transcribe")
 async def transcribe_raw(
     file: UploadFile = File(...),
-    model: str | None = None,
-    language: str | None = None,
+    model: str | None = Form(None),
+    language: str | None = Form(None),
 ) -> JSONResponse:
     return await audio_transcriptions(file=file, model=model, language=language)
 
+
+# ---------------------------------------------------------------------------
+#  對話（Ollama 相容 /api/chat）
+# ---------------------------------------------------------------------------
+@app.post("/api/chat")
+async def ollama_chat(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("無效的 JSON", status.HTTP_400_BAD_REQUEST)
+
+    if not isinstance(body, dict):
+        return _error("無效的請求內容", status.HTTP_400_BAD_REQUEST)
+
+    messages = body.get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        return _error("messages 不能為空", status.HTTP_400_BAD_REQUEST)
+
+    options = body.get("options") or {}
+    temperature = options.get("temperature")
+    max_tokens = options.get("num_predict")
+    try:
+        temperature = None if temperature is None else float(temperature)
+        max_tokens = None if max_tokens is None else int(max_tokens)
+    except (TypeError, ValueError):
+        return _error("options 格式錯誤", status.HTTP_400_BAD_REQUEST)
+
+    try:
+        reply = _reply_of(messages, temperature=temperature, max_tokens=max_tokens)
+    except ValueError as exc:
+        return _error(str(exc), status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("AI chat failed")
+        return _error("AI 語意理解失敗")
+
+    ai = state.ai
+    return JSONResponse(
+        content={
+            "model": body.get("model") or (ai.model if ai else "unknown"),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "message": {"role": "assistant", "content": reply},
+            "done": True,
+            "done_reason": "stop",
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+#  對話（OpenAI 相容 /chat/completions）
+# ---------------------------------------------------------------------------
+@app.post("/chat/completions")
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatCompletionRequest) -> JSONResponse:
+    if not req.messages:
+        return _error("messages 不能為空", status.HTTP_400_BAD_REQUEST)
+
+    ai = state.ai
+    if ai is None:
+        return _error("AI 客戶端尚未初始化", status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    messages = [{"role": m.role or "user", "content": m.content} for m in req.messages]
+    try:
+        reply = _reply_of(messages, temperature=req.temperature, max_tokens=req.max_tokens)
+    except ValueError as exc:
+        return _error(str(exc), status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("AI chat failed")
+        return _error("AI 語意理解失敗")
+
+    approx_tokens = max(1, len(reply) // 4)
+    return JSONResponse(
+        content={
+            "id": f"chatcmpl-{time.time_ns()}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": req.model or ai.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": reply},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": approx_tokens,
+                "total_tokens": approx_tokens,
+            },
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+#  AI 對話（簡易 JSON API，保留給自訂客戶端）
+# ---------------------------------------------------------------------------
 @app.post("/ai/chat")
 async def ai_chat(
     user_message: str,
@@ -163,39 +346,33 @@ async def ai_chat(
     if not user_message or not user_message.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="使用者訊息不能為空")
 
-    ai = state.ai
-    if ai is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AI 客戶端尚未初始化")
-
     messages: list[dict[str, str]] = []
-
-    if ai.system_prompt:
-        messages.append({"role": "system", "content": ai.system_prompt})
-
     if history:
         for msg in history:
             if msg.get("role") and msg.get("content"):
                 messages.append({"role": msg["role"], "content": msg["content"]})
-
     messages.append({"role": "user", "content": user_message})
 
     try:
-        reply = ai.chat(messages)
+        reply = _reply_of(messages)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("AI chat failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                           detail="AI 語意理解失敗") from exc
+                            detail="AI 語意理解失敗") from exc
 
-    if not reply:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                           detail="AI 未回傳任何內容")
+    return JSONResponse(content={"text": reply})
 
-    return JSONResponse(content={"text": reply.strip()})
 
+# ---------------------------------------------------------------------------
+#  語音 + AI 一次完成
+# ---------------------------------------------------------------------------
 @app.post("/voice/chat")
+@app.post("/v1/voice/chat")
 async def voice_chat(
     file: UploadFile = File(...),
-    language: str | None = None,
+    language: str | None = Form(None),
 ) -> JSONResponse:
     start = time.perf_counter()
 
@@ -208,10 +385,10 @@ async def voice_chat(
 
     if whisper is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                           detail="Whisper 模型尚未載入")
+                            detail="Whisper 模型尚未載入")
     if ai is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                           detail="AI 客戶端尚未初始化")
+                            detail="AI 客戶端尚未初始化")
 
     try:
         transcript = await transcribe_wav_bytes(
@@ -223,25 +400,18 @@ async def voice_chat(
     except Exception as exc:
         logger.exception("STT failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                           detail="語音辨識失敗") from exc
+                            detail="語音辨識失敗") from exc
 
     if not transcript:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                           detail="沒有辨識到語音內容")
+                            detail="沒有辨識到語音內容")
 
     try:
-        reply = ai.chat([
-            {"role": "system", "content": ai.system_prompt},
-            {"role": "user", "content": transcript},
-        ])
+        reply = _reply_of([{"role": "user", "content": transcript}])
     except Exception as exc:
         logger.exception("AI chat failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                           detail="AI 語意理解失敗") from exc
-
-    if not reply:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                           detail="AI 未回傳任何內容")
+                            detail="AI 語意理解失敗") from exc
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     logger.info(
@@ -251,7 +421,7 @@ async def voice_chat(
 
     return JSONResponse(content={
         "transcript": transcript,
-        "reply": reply.strip(),
+        "reply": reply,
         "elapsed_ms": elapsed_ms,
     })
 

@@ -90,7 +90,16 @@ class AIClient:
             self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers=headers)
         return self._client
 
-    def chat(self, messages: list[dict[str, str]]) -> str:
+    def chat(self, messages: list[dict[str, str]], temperature: float | None = None,
+             max_tokens: int | None = None) -> str:
+        """送出對話。messages 已含 system 時不會重複插入系統提示詞。"""
+        msgs = list(messages)
+        if self.system_prompt and not any(m.get("role") == "system" for m in msgs):
+            msgs.insert(0, {"role": "system", "content": self.system_prompt})
+
+        temp = self.temperature if temperature is None else float(temperature)
+        tokens = self.max_tokens if max_tokens is None else int(max_tokens)
+
         if self.mode == "ollama":
             if not self.ollama:
                 self.ollama = OllamaClient(
@@ -98,10 +107,10 @@ class AIClient:
                     model=self.model,
                 )
             return self.ollama.chat(
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                system_prompt=self.system_prompt,
+                messages=msgs,
+                temperature=temp,
+                max_tokens=tokens,
+                system_prompt="",
             )
         else:
             import httpx
@@ -109,9 +118,10 @@ class AIClient:
             client = self._get_http_client()
             payload = {
                 "model": self.model,
-                "messages": messages,
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
+                "messages": msgs,
+                "temperature": temp,
+                "max_tokens": tokens,
+                "stream": False,
             }
 
             response = client.post("/chat/completions", json=payload)

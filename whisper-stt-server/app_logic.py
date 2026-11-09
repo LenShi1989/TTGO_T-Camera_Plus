@@ -30,8 +30,12 @@ def _sync_transcribe(
     model_hint: str | None,
     language_hint: str | None,
 ) -> str:
+    # faster-whisper / PyAV 需要檔案物件或路徑，直接丟 bytes 會出現
+    # "File object has no read() method"。用 BytesIO 包起來。
+    import io
+
     segments, info = whisper.transcribe(
-        audio_bytes,
+        io.BytesIO(audio_bytes),
         language=language_hint,
         task="transcribe",
         beam_size=5,

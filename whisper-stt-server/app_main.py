@@ -1,20 +1,18 @@
 import logging
+import os
 
 logger = logging.getLogger("whisper-stt")
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
     logger.info("start whisper-stt-server")
-    import uvicorn
 
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=8000,
-        log_level="info",
-        access_log=True,
-    )
+    # app.run() 會讀取 STT_HOST / STT_PORT / LOG_LEVEL 環境變數，
+    # 這裡不要另外硬編 8000，否則 README 的設定會失效。
+    from app import run
+
+    run()
 
 
 if __name__ == "__main__":

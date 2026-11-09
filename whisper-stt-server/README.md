@@ -1,11 +1,19 @@
 # whisper-stt-server
 
+版本：**1.2.0**
+
 Python + FastAPI + faster-whisper 的繁體中文語音轉文字（STT）伺服器。
 
 用途：供 TTGO T-Camera Plus ESP32 裝置把麥克風錄製的 16 kHz 單聲道 WAV 上傳，
 轉成文字後回給 ESP32，由後者的 Ollama + Qwen 處理語意，並輸出至 TFT 240x240 螢幕。
 
-相容介面：OpenAI 相容的 `POST /audio/transcriptions`（multipart/form-data）。
+相容介面：
+
+- `POST /audio/transcriptions`、`POST /v1/audio/transcriptions`（OpenAI 相容，multipart/form-data）
+- `POST /chat/completions`、`POST /v1/chat/completions`（OpenAI 相容，轉給 Ollama）
+- `POST /api/chat`（Ollama 相容）
+- `GET /models`、`GET /v1/models`、`GET /api/tags`（模型列表）
+- `POST /voice/chat`、`POST /v1/voice/chat`（語音辨識 + AI 回應一次完成）
 
 ## 環境
 
@@ -46,16 +54,38 @@ ESP32 可直接使用：
 
 ### ESP32 設定範例
 
-在裝置網頁的「AI 設定 -> 語音辨識」中：
+> 網址一定要包含 `http://`。只填 `192.168.5.100:8000` 時，舊版韌體會顯示
+> 「無法建立 HTTP 連線」；新版韌體會自動補上 `http://`。
 
-- 啟用語音辨識：勾選
-- 服務網址：`http://192.168.5.100:8000`
-- API Key：留空（本機服務通常不需金鑰）
-- 模型：`base`
-- 語言：`zh`
+**方式 A：Ollama 模式（建議，不需要 API Key）**
 
-若 ESP32 與該伺服器位在同一區網，網路設定裏的 Base URL 與 STT Base URL
-都可填 `http://192.168.5.100:8000`，API Key 留空。
+| 欄位 | 值 |
+| --- | --- |
+| 協定模式 | `ollama` |
+| 服務網址 | `http://192.168.5.100:8000` |
+| API Key | 留空 |
+| 模型 | 由伺服器 `AI_MODEL` 決定（例如 `qwen3.5:9b`） |
+
+**方式 B：OpenAI 相容模式**
+
+| 欄位 | 值 |
+| --- | --- |
+| 協定模式 | `openai` |
+| 服務網址 | `http://192.168.5.100:8000/v1` |
+| API Key | 任意非空字串（例如 `local`） |
+| 模型 | `qwen3.5:9b` |
+
+**語音辨識（STT）**
+
+| 欄位 | 值 |
+| --- | --- |
+| 啟用語音辨識 | 勾選 |
+| 服務網址 | `http://192.168.5.100:8000`（留空則沿用 AI 網址） |
+| API Key | 留空 |
+| 模型 | `base` |
+| 語言 | `zh` |
+
+兩種模式都會把對話轉給 `AI_BASE_URL`（預設 `http://localhost:11434`）的 Ollama。
 
 ### 模型
 
@@ -114,12 +144,30 @@ $res.Content.ReadAsStringAsync().Result
 
 ### 提示詞與模型行為
 
-- 這個伺服器只做語音轉文字，不作語意理解。
+- `/audio/transcriptions` 只做語音轉文字；`/voice/chat`、`/chat/completions`、`/api/chat` 會再交給 Ollama 做語意理解。
 - 語意理解交給 ESP32 後端的 Ollama + Qwen。
 - Whisper 輸出的是逐字稿，可直接當成使用者訊息送給 AI。
+
+### 疑難排解
+
+- `TypeError: open() got an unexpected keyword argument 'metadata_errors'`
+  → PyAV 14 以上不相容目前的 faster-whisper。執行
+  `pip install "av>=11,<14"`（`requirements.txt` 已固定版本）。
+- `File object has no read() method, or readable() returned False`
+  → 舊版程式把 raw bytes 直接交給 faster-whisper；更新後的 `app_logic.py`
+  會用 `io.BytesIO` 包裝。
+- ESP32 顯示「無法建立 HTTP 連線」→ Base URL 必須有 `http://`；新版韌體
+  也會自動補上。舊版韌體在語音流程切割網址時會把 `:8000` 的結尾切掉，
+  已用 `voice_endpoint()` 修正。
+- 修改程式或套件後記得 **重啟伺服器**（Ctrl+C 後重新執行 `app_main.py`）。
 
 ### 限制
 
 - 只處理單一檔案上傳，不排隊也不快取。
 - 模型推論會占用 CPU/GPU，若有多台 ESP32 同時送語音，可能會排隊。
 - 第一次載入模型時會較慢。
+
+## 版本紀錄
+
+- **1.2.0**：新增 OpenAI／Ollama 相容對話端點（`/chat/completions`、`/api/chat`）、`/v1` 路徑與 `/v1/models`；修正 STT 的 bytes 解碼與 PyAV 相容性；`app_main.py` 支援 `STT_HOST`／`STT_PORT`。
+- **1.1.0**：整合 Ollama + Qwen 語意理解。
