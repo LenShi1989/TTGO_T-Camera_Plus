@@ -4,7 +4,7 @@
 //  AI chat assistant for the TTGO T-Camera Plus (ESP32-DOWDQ6, 4 MB flash,
 //  8 MB PSRAM, ST7789 240x240, microSD, I2S microphone).
 //
-//  Version ................. 1.2.0  (APP_VERSION in board_config.h)
+//  Version ................. 1.3.0  (APP_VERSION in board_config.h)
 //  Hardware map ............ board_config.h
 //  Persistent settings ..... /sd/config.json  (SPIFFS fallback)
 //  Web UI .................. data/  -> SPIFFS
@@ -28,6 +28,7 @@
 #include "app_config.h"
 #include "app_wifi.h"
 #include "board_config.h"
+#include "camera.h"
 #include "chat.h"
 #include "display.h"
 #include "font_tc.h"
@@ -56,6 +57,7 @@ void setup()
   randomSeed((uint32_t)micros());
 
   // 1. panel first: tft.init() configures the shared VSPI bus (MISO/MOSI/SCLK)
+  //    and attaches the backlight PWM (LEDC channel 0 on core 3.x).
   display_begin();
 
   // 2. filesystems: SPIFFS for the web assets, SD on the bus opened above
@@ -71,14 +73,26 @@ void setup()
   // 5. splash
   display_boot_screen();
 
-  // 6. network (AP always on, STA when credentials exist)
+  // 6. OV2640 for the voice photo command.  Init after the panel so the
+  //    camera can pick LEDC channel/timer 1 without disturbing the backlight.
+  //    A missing camera is not fatal - everything else keeps working.
+  {
+    String cam_err;
+    if (camera_begin(cam_err)) {
+      Serial.println("[camera] OV2640 ready (JPEG)");
+    } else {
+      Serial.printf("[camera] unavailable: %s\n", cam_err.c_str());
+    }
+  }
+
+  // 7. network (AP always on, STA when credentials exist)
   wifi_begin();
 
-  // 7. AI worker + chat history
+  // 8. AI worker + chat history
   chat_begin();
   jobs_begin();
 
-  // 8. HTTP server
+  // 9. HTTP server
   web_begin();
 
   display_set_face(FACE_IDLE);

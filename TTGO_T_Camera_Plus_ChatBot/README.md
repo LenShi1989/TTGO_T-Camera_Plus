@@ -2,7 +2,7 @@
 
 把 TTGO T-Camera Plus（ESP32 + ST7789 240x240 + microSD + I2S 麥克風）變成一台
 **繁體中文 AI 聊天機器人**：網頁側邊欄介面、SD 卡檔案管理、Wi-Fi 掃描設定、
-OpenAI／OpenRouter／Groq／本機 Ollama 對話、Whisper 語音輸入，以及會眨眼、
+OpenAI／OpenRouter／Groq／本機 Ollama 對話、Whisper 語音輸入、語音拍照存檔，以及會眨眼、
 會思考、會說話的 TFT 表情動畫。
 
 > 本資料夾是**獨立**的 Arduino 專案，不會修改上層的 `esp32-camera-screen-master`
@@ -17,6 +17,7 @@ OpenAI／OpenRouter／Groq／本機 Ollama 對話、Whisper 語音輸入，以�
 | 網頁介面 | 深色側邊欄、聊天視窗、SD 卡檔案管理（拖放上傳／編輯／改名／刪除／下載）、Wi-Fi 掃描與連線、AI／STT／麥克風設定、系統資訊與顯示器設定 |
 | AI 對話 | OpenAI 相容 `/chat/completions`、Ollama 本地 `/api/chat`（`stream:false`）、多輪對話記憶、自訂系統提示詞 |
 | 語音輸入 | I2S 麥克風錄音 → 16-bit 單聲道 WAV 存到 SD 卡 → Whisper 相容 `/audio/transcriptions` → 自動送出對話 |
+| 語音拍照 | 說「拍照」「幫我拍一張」等指令 → OV2640 擷取 JPEG → 自動存到 SD 卡 `/photos/photo_XXXX.jpg`（不呼叫 AI） |
 | TFT 顯示 | 240x240 狀態列（時間／IP）、8 種表情動畫（待機／聆聽／思考／說話／開心／難過／錯誤／睡覺）、繁體中文 16x16 點陣字、回覆同步上螢幕 |
 | 設定儲存 | 所有參數都存在 SD 卡 `/config.json`；SD 卡不在時退回 SPIFFS `/config.json` |
 | 網路 | 永遠開啟 AP+STA：熱點 `名稱-XXXX`（預設密碼 `12345678`，`192.168.4.1`），同時連線家中路由器，支援 mDNS `http://<名稱>.local/` |
@@ -33,6 +34,7 @@ OpenAI／OpenRouter／Groq／本機 Ollama 對話、Whisper 語音輸入，以�
 | 螢幕 | ST7789 240x240 IPS，SPI：SCLK 21、MOSI 19、MISO 22、CS 12、DC 15、BL 2 |
 | microSD | CS **GPIO0**、與螢幕共用 SPI |
 | 麥克風 | I2S：BCLK 14、WS 32、DATA 33（32-bit 立體聲框，左右相加後 `>> 13`） |
+| 相機 | OV2640 200 萬畫素（DVP 並列匯流排＋SCCB）：XCLK 4、SIOD 18、SIOC 23、PCLK 25、VSYNC 5、HREF 27、D0–D7 34/13/26/35/39/38/37/36 |
 | I2C | SDA 18、SCL 23（本專案未使用） |
 | 按鍵 | 無使用者按鍵 |
 
@@ -53,6 +55,7 @@ TTGO_T_Camera_Plus_ChatBot/
 ├── display.h / .cpp                 狀態列、表情動畫、中文字
 ├── font_tc.h / .cpp                 TCF2 字型載入與繪製
 ├── audio.h / .cpp                   I2S 錄音 → WAV
+├── camera.h / .cpp                  OV2640 拍照 → SD 卡 `/photos`
 ├── chat.h / .cpp                    OpenAI / Ollama / Whisper
 ├── jobs.h / .cpp                    背景 AI 工作任務
 ├── web_ui.h / .cpp                  REST API + SPIFFS 靜態網頁
@@ -112,7 +115,7 @@ TFT_eSPI 會自動優先載入（`TFT_eSPI.h` 的 `__has_include(<tft_setup.h>)`
 
 把 [`sd_card/config.json`](sd_card/config.json) 複製到 microSD 卡**根目錄**，
 插入裝置。開機時若找不到設定檔，韌體會自動建立預設 `/config.json`。
-`/voice/` 資料夾會自動建立。
+`/voice/`（錄音）與 `/photos/`（語音拍照）資料夾會自動建立。
 
 > SD 卡建議 FAT32、32 GB 以下。GPIO0 同時是開機 strapping 腳位，若插卡後
 > 無法開機，先拔卡開機再插回（或換一張卡測試）。
@@ -124,7 +127,7 @@ TFT_eSPI 會自動優先載入（`TFT_eSPI.h` 的 `__has_include(<tft_setup.h>)`
 
 ```
 ==============================================
-  T-Camera Plus AI  v1.2.0
+  T-Camera Plus AI  v1.3.0
 ==============================================
 [tft] init ST7789 240x240
 [fs] mounting SPIFFS ...
@@ -183,6 +186,12 @@ Base URL 改成該電腦的區網 IP，模型填 `ollama list` 看到的名稱�
 - 按聊天頁的「🎙️ 語音」會錄 `mic_seconds` 秒，存成 `/voice/voice.wav`，
   上傳到 `/audio/transcriptions`，辨識文字會自動當成使用者訊息送出。
 - 未啟用 STT 時仍可錄音，只是不會自動對話；檔案可在 SD 卡頁下載。
+- **語音拍照**：說出「拍照」「幫我拍一張」「照張相」「自拍」等指令，韌體會在
+  語音辨識後攔截，不送 AI，直接用 OV2640 拍一張 JPEG 存到
+  `/photos/photo_0001.jpg`、`photo_0002.jpg`…，TFT 會顯示「已儲存照片 /photos/…」。
+- 拍照指令的判斷在裝置端完成（關鍵字比對），因此不需要 AI 服務也能拍照；
+  但仍需要啟用 STT 才能把語音轉成文字。
+- 照片可直接在網頁的 **SD 卡** 頁瀏覽、下載或刪除。
 
 > Whisper 需要能解 WAV 的服務。若使用 OpenAI，模型填 `whisper-1`、語言填 `zh`。
 > 若走本機 Whisper（例如 `whisper.cpp` server），請確認它支援
@@ -253,7 +262,7 @@ python tools\make_font.py
 | GET | `/api/config` | 讀取完整設定 |
 | POST | `/api/config` | 部分更新設定並存檔（只處理有送的欄位） |
 | POST | `/api/chat` | `{"message":"..."}` 啟動背景對話工作 |
-| POST | `/api/voice` | `{"seconds":6}` 啟動錄音 → STT → 對話 |
+| POST | `/api/voice` | `{"seconds":6}` 啟動錄音 → STT → 對話；辨識到拍照指令時改為拍照存檔 |
 | GET | `/api/job` | 查詢背景工作進度／結果 |
 | POST | `/api/chat/reset` | 清除裝置端對話記憶 |
 | GET | `/api/chat/history` | 目前對話記憶 |

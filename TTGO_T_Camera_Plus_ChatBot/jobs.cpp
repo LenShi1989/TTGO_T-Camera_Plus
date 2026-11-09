@@ -10,6 +10,7 @@
 #include "app_config.h"
 #include "audio.h"
 #include "board_config.h"
+#include "camera.h"
 #include "chat.h"
 #include "storage.h"
 
@@ -214,15 +215,33 @@ static void run_request(JobRequest *req) {
     }
 
     if (ok) {
-      // 使用一體化 voice_chat 端點（同時做 STT + AI 理解）
-      String st_temp, reply_temp;
-      ok = chat_voice_chat(VOICE_WAV_FILE, st_temp, reply_temp, err,
+      // 先只做語音辨識，拿到文字後再判斷是不是拍照指令。
+      // 拍照指令不送 AI，直接擷取 JPEG 存到 SD 卡，省下一次推論。
+      String st_temp;
+      ok = chat_transcribe(VOICE_WAV_FILE, st_temp, err,
                            [](int p, const char *phase) {
-                             job_progress(35 + p * 60 / 100, phase);
+                             job_progress(35 + p * 38 / 100, phase);
                            });
       if (ok) {
         transcript = st_temp;
-        result = reply_temp;
+
+        if (camera_is_photo_command(st_temp)) {
+          job_progress(78, "拍照中");
+          String photo_path;
+          size_t photo_bytes = 0;
+          String perr;
+          if (camera_capture_to_sd(photo_path, photo_bytes, perr)) {
+            result = "已儲存照片 " + photo_path;
+          } else {
+            ok  = false;
+            err = "拍照失敗：" + perr;
+          }
+        } else {
+          ok = chat_perform(st_temp, result, err,
+                            [](int p, const char *phase) {
+                              job_progress(75 + p * 24 / 100, phase);
+                            });
+        }
       }
     }
   }
